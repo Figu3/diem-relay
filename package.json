@@ -1,0 +1,17 @@
+{
+  "name": "diem-relay",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "admin": "bun run src/admin.ts"
+  },
+  "dependencies": {
+    "hono": "^4.7.0",
+    "viem": "^2.25.0"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.7"
+  }
+}
