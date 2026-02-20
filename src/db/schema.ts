@@ -45,4 +45,5 @@ export const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_usage_borrower ON usage_logs(borrower);
   CREATE INDEX IF NOT EXISTS idx_usage_created ON usage_logs(created_at);
   CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_deposits_tx_hash ON deposits(tx_hash) WHERE tx_hash IS NOT NULL;
 `;

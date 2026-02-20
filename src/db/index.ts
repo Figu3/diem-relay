@@ -42,9 +42,19 @@ export function upsertBorrower(address: string, alias?: string) {
   return getBorrower(addr)!;
 }
 
-export function addCredit(address: string, amountUsd: number, txHash?: string, note?: string) {
+export function addCredit(address: string, amountUsd: number, txHash?: string, note?: string): { borrower: BorrowerRow; alreadyProcessed: boolean } {
   const db = getDb();
   const addr = address.toLowerCase();
+
+  // Idempotency: if txHash already exists, skip (watcher replay safety)
+  if (txHash) {
+    const existing = db
+      .prepare("SELECT id FROM deposits WHERE tx_hash = ?")
+      .get(txHash);
+    if (existing) {
+      return { borrower: getBorrower(addr)!, alreadyProcessed: true };
+    }
+  }
 
   const txn = db.transaction(() => {
     db.prepare(
@@ -59,7 +69,7 @@ export function addCredit(address: string, amountUsd: number, txHash?: string, n
   });
 
   txn();
-  return getBorrower(addr)!;
+  return { borrower: getBorrower(addr)!, alreadyProcessed: false };
 }
 
 // ── Usage queries ──

@@ -53,7 +53,7 @@ switch (command) {
       process.exit(1);
     }
     const note = noteParts.join(" ") || undefined;
-    const b = addCredit(address, amount, txHash, note);
+    const { borrower: b } = addCredit(address, amount, txHash, note);
     console.log(`Credit added:`);
     console.log(`  Address:     ${b.address}`);
     console.log(`  Added:       ${formatUsd(amount)}`);

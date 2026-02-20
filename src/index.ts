@@ -186,8 +186,8 @@ app.post("/admin/credit", requireAdmin(), async (c) => {
     return c.json({ error: "address and amountUsd required" }, 400);
   }
 
-  const borrower = addCredit(body.address, body.amountUsd, body.txHash, body.note);
-  return c.json(borrower);
+  const { borrower, alreadyProcessed } = addCredit(body.address, body.amountUsd, body.txHash, body.note);
+  return c.json({ ...borrower, alreadyProcessed });
 });
 
 app.get("/admin/borrowers", requireAdmin(), (c) => {
