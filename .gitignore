@@ -1,5 +1,17 @@
+# ── Relay (TypeScript / Bun) ──────────────────────────────────
 node_modules/
-data/
-.env
-bun.lockb
 dist/
+data/
+bun.lockb
+
+# ── Contracts (Foundry) ──────────────────────────────────────
+contracts/cache/
+contracts/out/
+contracts/broadcast/*/31337/
+contracts/broadcast/**/dry-run/
+
+# ── Shared ────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!contracts/.env.example

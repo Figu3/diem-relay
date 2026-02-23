@@ -148,6 +148,9 @@ async function processDepositEvent(log: Log): Promise<void> {
     return;
   }
 
+  // M-6: USDC=USD assumption — Phase 0 treats 1 USDC = $1.00 exactly.
+  // If USDC depegs significantly, this over/under-credits borrowers.
+  // Phase 1 should add a price feed (e.g., Chainlink USDC/USD) to convert accurately.
   const amountUsd = Number(formatUnits(amount, USDC_DECIMALS));
 
   console.log(`  Deposit: ${borrower} — $${amountUsd.toFixed(2)} (tx: ${txHash.slice(0, 18)}...)`);
@@ -197,35 +200,11 @@ async function main() {
 
   console.log(dim(`  Watching for Deposited events...\n`));
 
-  // Use watchEvent for real-time monitoring
-  const unwatch = client.watchContractEvent({
-    address: VAULT_ADDRESS,
-    abi: [DEPOSITED_EVENT],
-    eventName: "Deposited",
-    onLogs: async (logs) => {
-      for (const log of logs) {
-        try {
-          await processDepositEvent(log as Log);
+  // H-4: Catch up on missed events BEFORE starting real-time watcher
+  // to prevent race where real-time events arrive while catch-up is in progress,
+  // potentially causing duplicate processing or block-tracking gaps.
+  let watchFromBlock = fromBlock;
 
-          // Update state after each successfully processed event
-          const blockNumber = Number(log.blockNumber);
-          if (blockNumber > state.lastProcessedBlock) {
-            state.lastProcessedBlock = blockNumber;
-            saveState(state);
-          }
-        } catch (err: any) {
-          console.error(`  Error processing event: ${err.message}`);
-          // Don't update state — will retry on next poll
-        }
-      }
-    },
-    onError: (error) => {
-      console.error(`  Watch error: ${error.message}`);
-    },
-    pollingInterval: POLL_INTERVAL_MS,
-  });
-
-  // Also catch up on any missed events (between last saved block and current)
   if (state.lastProcessedBlock > 0) {
     const currentBlock = await client.getBlockNumber();
     const gapStart = BigInt(state.lastProcessedBlock + 1);
@@ -257,8 +236,38 @@ async function main() {
       }
 
       console.log(dim(`  Catch-up complete\n`));
+      // Start real-time watcher from the block AFTER catch-up finished
+      watchFromBlock = currentBlock + 1n;
     }
   }
+
+  // Now start real-time watcher — only processes blocks after catch-up range
+  const unwatch = client.watchContractEvent({
+    address: VAULT_ADDRESS,
+    abi: [DEPOSITED_EVENT],
+    eventName: "Deposited",
+    onLogs: async (logs) => {
+      for (const log of logs) {
+        try {
+          await processDepositEvent(log as Log);
+
+          // Update state after each successfully processed event
+          const blockNumber = Number(log.blockNumber);
+          if (blockNumber > state.lastProcessedBlock) {
+            state.lastProcessedBlock = blockNumber;
+            saveState(state);
+          }
+        } catch (err: any) {
+          console.error(`  Error processing event: ${err.message}`);
+          // Don't update state — will retry on next poll
+        }
+      }
+    },
+    onError: (error) => {
+      console.error(`  Watch error: ${error.message}`);
+    },
+    pollingInterval: POLL_INTERVAL_MS,
+  });
 
   // Keep process alive
   console.log(dim("  Watcher running. Ctrl+C to stop.\n"));

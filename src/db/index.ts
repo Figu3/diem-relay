@@ -57,10 +57,20 @@ export function addCredit(address: string, amountUsd: number, txHash?: string, n
   }
 
   const txn = db.transaction(() => {
+    // H-3: Auto-create borrower if not exists, so credits are never silently lost
     db.prepare(
-      `UPDATE borrowers SET balance_usd = balance_usd + ?, updated_at = unixepoch()
+      `INSERT INTO borrowers (address) VALUES (?)
+       ON CONFLICT(address) DO NOTHING`
+    ).run(addr);
+
+    const result = db.prepare(
+      `UPDATE borrowers SET balance_usd = ROUND(balance_usd + ?, 6), updated_at = unixepoch()
        WHERE address = ?`
     ).run(amountUsd, addr);
+
+    if (result.changes === 0) {
+      throw new Error(`Failed to credit borrower ${addr}: UPDATE affected 0 rows`);
+    }
 
     db.prepare(
       `INSERT INTO deposits (borrower, amount_usd, tx_hash, note)
@@ -72,9 +82,72 @@ export function addCredit(address: string, amountUsd: number, txHash?: string, n
   return { borrower: getBorrower(addr)!, alreadyProcessed: false };
 }
 
+// ── Daily reset helper (shared between preflight and usage recording) ──
+
+export function resetDailyIfNeeded(address: string): void {
+  const db = getDb();
+  const addr = address.toLowerCase();
+  const now = Math.floor(Date.now() / 1000);
+  const dayStart = now - (now % 86400);
+  const borrower = getBorrower(addr);
+  if (borrower && borrower.daily_reset < dayStart) {
+    db.prepare(
+      "UPDATE borrowers SET daily_spent = 0, daily_reset = ?, updated_at = unixepoch() WHERE address = ?"
+    ).run(dayStart, addr);
+  }
+}
+
+/**
+ * Get the current daily spend for a borrower, resetting if it's a new day.
+ */
+export function getDailySpent(address: string): number {
+  resetDailyIfNeeded(address);
+  const b = getBorrower(address);
+  return b?.daily_spent ?? 0;
+}
+
+// ── Balance reservation (H-1: prevent TOCTOU race) ──
+
+/**
+ * Atomically reserve (deduct) an estimated amount from the borrower's balance.
+ * Returns true if the reservation succeeded, false if insufficient funds.
+ */
+export function reserveBalance(address: string, estimatedUsd: number): boolean {
+  const db = getDb();
+  const addr = address.toLowerCase();
+  const b = getBorrower(addr);
+  if (!b || b.balance_usd < estimatedUsd) return false;
+
+  const result = db.prepare(
+    `UPDATE borrowers SET balance_usd = balance_usd - ?, updated_at = unixepoch()
+     WHERE address = ? AND balance_usd >= ?`
+  ).run(estimatedUsd, addr, estimatedUsd);
+
+  return result.changes > 0;
+}
+
+/**
+ * Refund a previous reservation (e.g., Venice call failed).
+ */
+export function refundReservation(address: string, amountUsd: number): void {
+  const db = getDb();
+  const addr = address.toLowerCase();
+  db.prepare(
+    `UPDATE borrowers SET balance_usd = balance_usd + ?, updated_at = unixepoch()
+     WHERE address = ?`
+  ).run(amountUsd, addr);
+}
+
 // ── Usage queries ──
 
-export function recordUsage(params: {
+/**
+ * Settle usage after Venice responds. The balance was already reserved
+ * via reserveBalance(), so this refunds the difference and records the log.
+ *
+ * @param reservedUsd - the amount previously reserved
+ * @param actualChargedUsd - the actual cost to charge
+ */
+export function settleUsage(params: {
   borrower: string;
   model: string;
   promptTokens: number;
@@ -83,33 +156,37 @@ export function recordUsage(params: {
   chargedUsd: number;
   protocolFee: number;
   requestId?: string;
+  reservedUsd: number;
 }) {
   const db = getDb();
   const addr = params.borrower.toLowerCase();
-  const now = Math.floor(Date.now() / 1000);
+
+  const refund = params.reservedUsd - params.chargedUsd;
 
   const txn = db.transaction(() => {
-    // Reset daily counter if new day
-    const borrower = getBorrower(addr);
-    if (borrower) {
-      const lastReset = borrower.daily_reset;
-      const dayStart = now - (now % 86400);
-      if (lastReset < dayStart) {
-        db.prepare(
-          "UPDATE borrowers SET daily_spent = 0, daily_reset = ? WHERE address = ?"
-        ).run(dayStart, addr);
-      }
+    // Refund the difference between reserved and actual
+    if (refund > 0) {
+      db.prepare(
+        `UPDATE borrowers SET balance_usd = ROUND(balance_usd + ?, 6), updated_at = unixepoch()
+         WHERE address = ?`
+      ).run(refund, addr);
+    } else if (refund < 0) {
+      // Actual was more than reserved (rare) — deduct the extra
+      db.prepare(
+        `UPDATE borrowers SET balance_usd = ROUND(balance_usd + ?, 6), updated_at = unixepoch()
+         WHERE address = ?`
+      ).run(refund, addr); // refund is negative, so this deducts
     }
 
-    // Deduct from balance and add to spent
+    // Update spent counters
+    resetDailyIfNeeded(addr);
     db.prepare(
       `UPDATE borrowers SET
-         balance_usd = balance_usd - ?,
-         total_spent = total_spent + ?,
-         daily_spent = daily_spent + ?,
+         total_spent = ROUND(total_spent + ?, 6),
+         daily_spent = ROUND(daily_spent + ?, 6),
          updated_at = unixepoch()
        WHERE address = ?`
-    ).run(params.chargedUsd, params.chargedUsd, params.chargedUsd, addr);
+    ).run(params.chargedUsd, params.chargedUsd, addr);
 
     // Log usage
     db.prepare(
@@ -205,6 +282,15 @@ export function cleanExpiredSessions() {
   const db = getDb();
   const now = Math.floor(Date.now() / 1000);
   db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now);
+}
+
+/**
+ * M-2: Invalidate all sessions for a borrower (e.g., on suspension).
+ */
+export function invalidateBorrowerSessions(address: string): number {
+  const db = getDb();
+  const result = db.prepare("DELETE FROM sessions WHERE borrower = ?").run(address.toLowerCase());
+  return result.changes;
 }
 
 // ── Types ──

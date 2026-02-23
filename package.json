@@ -8,7 +8,10 @@
     "admin": "bun run src/admin.ts",
     "borrower": "bun run src/borrower-cli.ts",
     "test:e2e": "bun run src/test-e2e.ts",
-    "watcher": "bun run src/deposit-watcher.ts"
+    "watcher": "bun run src/deposit-watcher.ts",
+    "build:contracts": "cd contracts && forge build",
+    "test:contracts": "cd contracts && forge test",
+    "test": "cd contracts && forge test"
   },
   "dependencies": {
     "hono": "^4.7.0",

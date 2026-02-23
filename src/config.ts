@@ -34,7 +34,7 @@ export const config = {
 
   /** Max daily spend per borrower in USD (rate limit) */
   maxDailySpendUsd: 50,
-} as const;
+};
 
 export function getModelPricing(model: string) {
   const m = config.pricing.models[model];
