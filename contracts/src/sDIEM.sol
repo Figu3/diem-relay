@@ -144,7 +144,6 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         external
         override
         nonReentrant
-        whenNotPaused
         updateReward(msg.sender)
     {
         _withdraw(msg.sender, amount);
@@ -154,7 +153,6 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         public
         override
         nonReentrant
-        whenNotPaused
         updateReward(msg.sender)
     {
         _claimReward(msg.sender);
@@ -164,7 +162,6 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         external
         override
         nonReentrant
-        whenNotPaused
         updateReward(msg.sender)
     {
         _withdraw(msg.sender, _balances[msg.sender]);

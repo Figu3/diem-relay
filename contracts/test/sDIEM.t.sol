@@ -158,16 +158,18 @@ contract sDIEMTest is Test {
         staking.withdraw(DIEM_AMOUNT + 1);
     }
 
-    function test_withdraw_revertsWhenPaused() public {
+    function test_withdraw_allowedWhenPaused() public {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
         vm.prank(admin);
         staking.pause();
 
+        // Withdraw must succeed even when paused — users can always get funds out
         vm.prank(alice);
-        vm.expectRevert("sDIEM: paused");
         staking.withdraw(DIEM_AMOUNT);
+        assertEq(diemToken.balanceOf(alice), 1000e18); // back to initial mint
+        assertEq(staking.totalStaked(), 0);
     }
 
     // ── Rewards ──────────────────────────────────────────────────────────
