@@ -1,8 +1,6 @@
 # DIEM Relay
 
-Pay-per-token AI inference relay backed by on-chain USDC deposits.
-
-Borrowers deposit USDC into the on-chain vault, the relay watches for deposit events and credits balances, then borrowers consume AI inference at a discount through an OpenAI-compatible API proxying Venice.ai.
+Pay-per-token AI inference relay backed by on-chain USDC deposits, with DIEM token staking for yield.
 
 ## Architecture
 
@@ -15,11 +13,46 @@ Borrower calls /v1/chat/completions --> Relay --> Venice.ai
                                | deducts from balance
 ```
 
+### Staking (Dual-Mode)
+
+DIEM holders can stake to earn yield from Venice AI compute revenue:
+
+```
+                  ┌─────────────────────────────────────┐
+                  │         Venice AI Revenue            │
+                  │         (USDC from inference)        │
+                  └──────────┬──────────────┬────────────┘
+                             │              │
+                     ┌───────▼──────┐  ┌────▼──────────┐
+                     │    sDIEM     │  │    csDIEM     │
+                     │  Earn USDC   │  │  Earn DIEM    │
+                     │  Synthetix   │  │  ERC-4626     │
+                     │  24h stream  │  │  Composable   │
+                     └──────────────┘  └───────────────┘
+```
+
+| Contract | Model | Reward | Composable | Use Case |
+|---|---|---|---|---|
+| **sDIEM** | Synthetix StakingRewards | USDC (streamed over 24h) | No | Direct yield, claim anytime |
+| **csDIEM** | ERC-4626 vault | DIEM (via operator donation) | Yes | Pendle, Morpho, Silo integration |
+
 ## Structure
 
 ```
 src/              Relay server (TypeScript / Bun / Hono)
-contracts/        On-chain vault (Solidity 0.8.24 / Foundry)
+contracts/
+  src/
+    DIEMVault.sol           USDC deposit vault for relay credits
+    sDIEM.sol               Stake DIEM, earn USDC (Synthetix model)
+    csDIEM.sol              Stake DIEM, earn DIEM (ERC-4626, composable)
+    interfaces/
+      IsDIEM.sol            sDIEM interface
+      IcsDIEM.sol           csDIEM interface (extends IERC4626)
+  test/
+    sDIEM.t.sol             34 unit/fuzz tests
+    sDIEMInvariant.t.sol    6 invariant tests
+    csDIEM.t.sol            35 unit/fuzz tests
+    csDIEMInvariant.t.sol   5 invariant tests
 ```
 
 ## Quick Start
@@ -38,7 +71,7 @@ bun run dev            # http://localhost:3100
 cd contracts
 forge install
 forge build
-forge test
+forge test             # 124 tests (unit, fuzz, invariant)
 ```
 
 ### Deploy (Sepolia)
@@ -59,3 +92,11 @@ forge script script/DeployDIEMVault.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast
 | `bun run borrower` | Borrower CLI |
 | `bun run test:e2e` | E2E relay tests |
 | `bun run test:contracts` | Foundry tests |
+
+## Security
+
+- **Static analysis**: Slither clean on all contracts (zero High/Medium/Critical)
+- **Test coverage**: 124 tests across 6 suites including invariant + fuzz testing
+- **Pause design**: Deposits gated behind pause; withdrawals always allowed
+- **csDIEM**: Two-step admin transfer, ERC-4626 virtual share offset (1e6) for inflation attack protection
+- **sDIEM**: Immutable admin, CEI pattern, SafeERC20 throughout
