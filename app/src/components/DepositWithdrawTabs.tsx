@@ -1,0 +1,38 @@
+"use client";
+
+import { useState } from "react";
+import type { ReactNode } from "react";
+
+interface Tab {
+  label: string;
+  content: ReactNode;
+}
+
+interface DepositWithdrawTabsProps {
+  tabs: [Tab, Tab];
+}
+
+export function DepositWithdrawTabs({ tabs }: DepositWithdrawTabsProps) {
+  const [active, setActive] = useState(0);
+
+  return (
+    <div className="mt-4 rounded-xl border border-border bg-card-inner p-4">
+      <div className="mb-3 flex gap-1 rounded-lg bg-surface p-0.5">
+        {tabs.map((tab, i) => (
+          <button
+            key={tab.label}
+            onClick={() => setActive(i)}
+            className={`flex-1 rounded-md py-1.5 text-xs font-medium transition ${
+              active === i
+                ? "bg-gold text-black"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      {tabs[active].content}
+    </div>
+  );
+}

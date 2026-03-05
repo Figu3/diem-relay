@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-gold: #f5a623;
+  --color-gold-hover: #d4911e;
+  --color-gold-muted: rgba(245, 166, 35, 0.1);
+  --color-card: #1a1d26;
+  --color-card-inner: #12141a;
+  --color-surface: #0e1015;
+  --color-border: #2a2d38;
+}
+
+body {
+  background-color: var(--color-surface);
+  color: #f5f5f5;
+}
+
+/* RainbowKit overrides for dark theme */
+[data-rk] {
+  --rk-colors-accentColor: var(--color-gold) !important;
+}
+
+/* Number input spinner removal */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* Shimmer loading skeleton */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #1a1d26 25%, #2a2d38 50%, #1a1d26 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 4px;
+}
