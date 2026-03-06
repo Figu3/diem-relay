@@ -5,21 +5,30 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IsDIEM} from "./interfaces/IsDIEM.sol";
+import {IDIEMStaking} from "./interfaces/IDIEMStaking.sol";
 
 /**
  * @title sDIEM
  * @notice Staked DIEM — deposit DIEM, earn USDC rewards.
  *
- * Synthetix StakingRewards fork. An off-chain operator sells Venice AI
- * compute credits and calls `notifyRewardAmount()` daily with USDC revenue.
- * Rewards stream linearly over 24 hours to all stakers pro-rata.
+ * Synthetix StakingRewards fork with Venice forward-staking.
+ *
+ * An off-chain operator sells Venice AI compute credits and calls
+ * `notifyRewardAmount()` daily with USDC revenue. Rewards stream
+ * linearly over 24 hours to all stakers pro-rata.
+ *
+ * Venice forward-staking: deposited DIEM is forward-staked on the
+ * DIEM token contract to earn Venice compute credits ($1/day per
+ * staked DIEM). A liquid buffer (target 10%) is maintained for
+ * instant withdrawals. The operator manages buffer rebalancing.
  *
  * Key differences from vanilla Synthetix:
  *   - Reward token is USDC (6 decimals) instead of 18-decimal token.
  *     Precision is safe because `rewardPerTokenStored` uses 1e18 scaling.
- *   - No withdrawal cooldown — instant unstake.
+ *   - Forward-staked DIEM earns Venice compute credits.
+ *   - Withdrawals limited to liquid buffer (operator replenishes from Venice).
  *   - Emergency pause on stake/withdraw/claim.
- *   - Operator role (can notify rewards) separated from admin (can pause/set operator).
+ *   - Operator role separated from admin.
  */
 contract sDIEM is IsDIEM, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -29,10 +38,21 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
     uint256 public constant REWARDS_DURATION = 24 hours;
     uint256 private constant PRECISION = 1e18;
 
+    /// @notice Buffer target: 10% of total deposits kept liquid.
+    uint256 public constant BUFFER_TARGET_BPS = 1000;
+
+    /// @notice Buffer floor: below 5%, operator should replenish.
+    uint256 public constant BUFFER_FLOOR_BPS = 500;
+
+    uint256 private constant BPS = 10000;
+
     // ── Immutables ──────────────────────────────────────────────────────
 
     IERC20 public immutable override diem;
     IERC20 public immutable override usdc;
+
+    /// @notice The DIEM token contract (which has staking built-in).
+    IDIEMStaking public immutable diemStaking;
 
     // ── State — roles ───────────────────────────────────────────────────
 
@@ -92,6 +112,8 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
 
         diem = IERC20(_diem);
         usdc = IERC20(_usdc);
+        // DIEM token contract has staking built-in — same address
+        diemStaking = IDIEMStaking(_diem);
         admin = _admin;
         operator = _operator;
     }
@@ -117,6 +139,23 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
     function earned(address account) public view override returns (uint256) {
         return (_balances[account] * (rewardPerToken() - userRewardPerTokenPaid[account])) / PRECISION
             + rewards[account];
+    }
+
+    /// @inheritdoc IsDIEM
+    function liquidBuffer() public view override returns (uint256) {
+        return diem.balanceOf(address(this));
+    }
+
+    /// @inheritdoc IsDIEM
+    function forwardStaked() public view override returns (uint256) {
+        (uint256 staked,,) = diemStaking.stakedInfos(address(this));
+        return staked;
+    }
+
+    /// @inheritdoc IsDIEM
+    function pendingUnstake() public view override returns (uint256) {
+        (,, uint256 pending) = diemStaking.stakedInfos(address(this));
+        return pending;
     }
 
     // ── Mutative — staking ──────────────────────────────────────────────
@@ -173,6 +212,7 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
     function _withdraw(address user, uint256 amount) internal {
         require(amount > 0, "sDIEM: zero amount");
         require(_balances[user] >= amount, "sDIEM: insufficient balance");
+        require(diem.balanceOf(address(this)) >= amount, "sDIEM: buffer insufficient");
 
         // Effects
         totalStaked -= amount;
@@ -230,6 +270,61 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         periodFinish = block.timestamp + REWARDS_DURATION;
 
         emit RewardNotified(reward, rewardRate, periodFinish);
+    }
+
+    // ── Operator — Venice forward-staking ──────────────────────────────
+
+    /**
+     * @notice Deploy idle DIEM from liquid buffer to Venice staking.
+     * @dev Calls DIEM.stake() which does an internal balance transfer.
+     *      Enforces buffer floor to ensure withdrawal liquidity.
+     * @param amount Amount of DIEM to forward-stake.
+     */
+    function deployToVenice(uint256 amount) external override onlyOperator nonReentrant {
+        require(amount > 0, "sDIEM: zero amount");
+
+        uint256 currentBuffer = diem.balanceOf(address(this));
+        require(currentBuffer >= amount, "sDIEM: insufficient buffer");
+
+        uint256 bufferAfter = currentBuffer - amount;
+        // Enforce buffer floor (skip check if totalStaked is 0 to avoid div-by-zero)
+        if (totalStaked > 0) {
+            require(
+                bufferAfter >= (totalStaked * BUFFER_FLOOR_BPS) / BPS,
+                "sDIEM: would breach buffer floor"
+            );
+        }
+
+        // Interaction — stake on DIEM contract
+        diemStaking.stake(amount);
+
+        emit DeployedToVenice(amount);
+    }
+
+    /**
+     * @notice Start unstaking DIEM from Venice to replenish buffer.
+     * @dev Initiates the 24h cooldown on the DIEM contract.
+     *      Warning: calling again while pending resets the cooldown timer.
+     * @param amount Amount of DIEM to unstake from Venice.
+     */
+    function initiateBufferReplenish(uint256 amount) external override onlyOperator nonReentrant {
+        require(amount > 0, "sDIEM: zero amount");
+
+        // Interaction — initiate unstake on DIEM contract
+        diemStaking.initiateUnstake(amount);
+
+        emit BufferReplenishInitiated(amount);
+    }
+
+    /**
+     * @notice Complete buffer replenishment after Venice cooldown expires.
+     * @dev Calls DIEM.unstake() which transfers pendingUnstakeAmount back.
+     */
+    function completeBufferReplenish() external override onlyOperator nonReentrant {
+        // Interaction — complete unstake on DIEM contract
+        diemStaking.unstake();
+
+        emit BufferReplenishCompleted(diem.balanceOf(address(this)));
     }
 
     // ── Admin ───────────────────────────────────────────────────────────
