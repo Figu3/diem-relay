@@ -21,20 +21,28 @@ DIEM holders can stake to earn yield from Venice AI compute revenue:
                   ┌─────────────────────────────────────┐
                   │         Venice AI Revenue            │
                   │         (USDC from inference)        │
-                  └──────────┬──────────────┬────────────┘
-                             │              │
-                     ┌───────▼──────┐  ┌────▼──────────┐
-                     │    sDIEM     │  │    csDIEM     │
-                     │  Earn USDC   │  │  Earn DIEM    │
-                     │  Synthetix   │  │  ERC-4626     │
-                     │  24h stream  │  │  Composable   │
-                     └──────────────┘  └───────────────┘
+                  └──────────────┬──────────────────────┘
+                                 │
+                        ┌────────▼─────────┐
+                        │  RevenueSplitter  │
+                        │  (permissionless) │
+                        └───┬──────────┬───┘
+                            │          │
+                    USDC    │          │  USDC → swap → DIEM
+                            │          │
+                    ┌───────▼──────┐  ┌▼──────────────┐
+                    │    sDIEM     │  │    csDIEM      │
+                    │  Earn USDC   │  │  Earn DIEM     │
+                    │  Synthetix   │  │  ERC-4626      │
+                    │  24h stream  │  │  Composable    │
+                    └──────────────┘  └────────────────┘
 ```
 
 | Contract | Model | Reward | Composable | Use Case |
 |---|---|---|---|---|
 | **sDIEM** | Synthetix StakingRewards | USDC (streamed over 24h) | No | Direct yield, claim anytime |
-| **csDIEM** | ERC-4626 vault | DIEM (via operator donation) | Yes | Pendle, Morpho, Silo integration |
+| **csDIEM** | ERC-4626 vault | DIEM (via donation) | Yes | Pendle, Morpho, Silo integration |
+| **RevenueSplitter** | Permissionless splitter | — | — | Splits USDC revenue to sDIEM + csDIEM |
 
 ### Venice Forward-Staking
 
@@ -42,17 +50,26 @@ Both sDIEM and csDIEM forward-stake deposited DIEM tokens on Venice to generate 
 
 ```
 User stakes DIEM → sDIEM/csDIEM
-                      │ ~90% deployed to Venice (DIEM.stake())
-                      │ ~10% kept as liquid buffer
+                      │ All DIEM deployed to Venice (DIEM.stake())
+                      │ Liquid DIEM held only for pending withdrawals
                       │
                 Venice compute credits ($1/day per staked DIEM)
                       │
-              Revenue funds rewards
+              Revenue → RevenueSplitter → rewards
               (USDC for sDIEM, DIEM for csDIEM)
 ```
 
-- **Buffer model**: 10% target / 5% floor — withdrawals served from buffer first, Venice unstaking (24h cooldown) only when buffer runs low
-- **Conservation invariant**: `liquidBuffer + forwardStaked + pendingUnstake == totalStaked`
+- **Permissionless Venice management**: `claimFromVenice()` and `redeployExcess()` callable by anyone
+- **24h async withdrawals**: Users request withdrawal → 24h delay (matches Venice cooldown) → complete withdrawal
+
+### RevenueSplitter
+
+Receives USDC from Venice compute credit revenue and splits it:
+
+- **sDIEM portion**: USDC transferred to sDIEM + `notifyRewardAmount()` called (starts 24h stream)
+- **csDIEM portion**: USDC swapped to DIEM via Uniswap V3, then `donate()` called on csDIEM (increases share price)
+
+`distribute()` is fully permissionless — anyone can trigger it when the contract holds USDC above the minimum threshold. Split ratio is admin-configurable in basis points.
 
 ## Structure
 
@@ -63,19 +80,25 @@ contracts/
     DIEMVault.sol           USDC deposit vault for relay credits
     sDIEM.sol               Stake DIEM, earn USDC (Synthetix model)
     csDIEM.sol              Stake DIEM, earn DIEM (ERC-4626, composable)
+    RevenueSplitter.sol     Permissionless USDC revenue distribution
     interfaces/
       IDIEMStaking.sol      DIEM token staking interface (Base)
       IsDIEM.sol            sDIEM interface
       IcsDIEM.sol           csDIEM interface (extends IERC4626)
+      IRevenueSplitter.sol  RevenueSplitter interface
+      ISwapRouter.sol       Minimal Uniswap V3 router interface
   test/
     sDIEM.t.sol             51 unit/fuzz tests (incl. Venice forward-staking)
-    sDIEMInvariant.t.sol    6 invariant tests (buffer conservation)
+    sDIEMInvariant.t.sol    6 invariant tests
     csDIEM.t.sol            53 unit/fuzz tests (incl. Venice forward-staking)
-    csDIEMInvariant.t.sol   5 invariant tests (buffer conservation)
+    csDIEMInvariant.t.sol   5 invariant tests
+    RevenueSplitter.t.sol   33 unit tests (split, swap, admin, integration)
     DIEMVault.t.sol         40 unit/fuzz tests
     DIEMVaultInvariant.t.sol 4 invariant tests
     mocks/
       MockDIEMStaking.sol   DIEM token mock with built-in staking
+      MockERC20.sol         Mintable ERC20 with configurable decimals
+      MockSwapRouter.sol    DEX router mock with configurable rate
 app/              Staking UI (Next.js 16 / wagmi / RainbowKit / Tailwind)
 ```
 
@@ -95,7 +118,7 @@ bun run dev            # http://localhost:3100
 cd contracts
 forge install
 forge build
-forge test             # 159 tests (unit, fuzz, invariant)
+forge test             # 206 tests (unit, fuzz, invariant)
 ```
 
 ### Deploy
@@ -125,7 +148,7 @@ OPERATOR=0x... forge script script/DeployCSDiem.s.sol --rpc-url $BASE_RPC_URL --
 |---|---|
 | `bun run dev` | Start relay in watch mode |
 | `bun run watcher` | Start deposit event watcher |
-| `bun run operator` | Venice forward-staking operator bot |
+| `bun run operator` | Permissionless keeper bot (Venice + revenue distribution) |
 | `bun run admin` | Admin CLI |
 | `bun run borrower` | Borrower CLI |
 | `bun run test:e2e` | E2E relay tests |
@@ -134,7 +157,9 @@ OPERATOR=0x... forge script script/DeployCSDiem.s.sol --rpc-url $BASE_RPC_URL --
 ## Security
 
 - **Static analysis**: Slither clean on all contracts (zero High/Medium/Critical)
-- **Test coverage**: 159 tests across 6 suites including invariant + fuzz testing
-- **Pause design**: Deposits gated behind pause; withdrawals always allowed
+- **Test coverage**: 206 tests across 7 suites including invariant + fuzz testing
+- **Permissionless design**: Venice management and revenue distribution require no special roles — anyone can call
+- **Pause design**: Deposits/staking gated behind pause; withdrawals always allowed
 - **csDIEM**: Two-step admin transfer, ERC-4626 virtual share offset (1e6) for inflation attack protection
 - **sDIEM**: Immutable admin, CEI pattern, SafeERC20 throughout
+- **RevenueSplitter**: ReentrancyGuard, two-step admin transfer, max slippage cap (10%), min distribution threshold, token recovery (non-USDC)

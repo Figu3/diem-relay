@@ -11,23 +11,25 @@ import {IDIEMStaking} from "./interfaces/IDIEMStaking.sol";
  * @title sDIEM
  * @notice Staked DIEM — deposit DIEM, earn USDC rewards.
  *
- * Synthetix StakingRewards fork with Venice forward-staking.
+ * Synthetix StakingRewards fork with 24h async withdrawals.
  *
- * An off-chain operator sells Venice AI compute credits and calls
+ * All deposited DIEM is immediately forward-staked on Venice for
+ * compute credits ($1/day per staked DIEM). No liquid buffer needed.
+ *
+ * Withdrawals use a request/complete pattern with a 24h delay,
+ * matching Venice's unstake cooldown. Venice management is fully
+ * permissionless — anyone can call claimFromVenice() or redeployExcess().
+ *
+ * An off-chain operator (or RevenueSplitter contract) calls
  * `notifyRewardAmount()` daily with USDC revenue. Rewards stream
  * linearly over 24 hours to all stakers pro-rata.
  *
- * Venice forward-staking: deposited DIEM is forward-staked on the
- * DIEM token contract to earn Venice compute credits ($1/day per
- * staked DIEM). A liquid buffer (target 10%) is maintained for
- * instant withdrawals. The operator manages buffer rebalancing.
- *
- * Key differences from vanilla Synthetix:
+ * Key differences from vanilla Synthetix StakingRewards:
  *   - Reward token is USDC (6 decimals) instead of 18-decimal token.
  *     Precision is safe because `rewardPerTokenStored` uses 1e18 scaling.
- *   - Forward-staked DIEM earns Venice compute credits.
- *   - Withdrawals limited to liquid buffer (operator replenishes from Venice).
- *   - Emergency pause on stake/withdraw/claim.
+ *   - All DIEM forward-staked on Venice for compute credits.
+ *   - 24h async withdrawal instead of instant withdraw.
+ *   - Emergency pause on stake/claim.
  *   - Operator role separated from admin.
  */
 contract sDIEM is IsDIEM, ReentrancyGuard {
@@ -36,15 +38,8 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
     // ── Constants ────────────────────────────────────────────────────────
 
     uint256 public constant REWARDS_DURATION = 24 hours;
+    uint256 public constant override WITHDRAWAL_DELAY = 24 hours;
     uint256 private constant PRECISION = 1e18;
-
-    /// @notice Buffer target: 10% of total deposits kept liquid.
-    uint256 public constant BUFFER_TARGET_BPS = 1000;
-
-    /// @notice Buffer floor: below 5%, operator should replenish.
-    uint256 public constant BUFFER_FLOOR_BPS = 500;
-
-    uint256 private constant BPS = 10000;
 
     // ── Immutables ──────────────────────────────────────────────────────
 
@@ -64,6 +59,11 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
 
     uint256 public override totalStaked;
     mapping(address => uint256) private _balances;
+
+    // ── State — withdrawals ─────────────────────────────────────────────
+
+    uint256 public override totalPendingWithdrawals;
+    mapping(address => WithdrawalRequest) private _withdrawalRequests;
 
     // ── State — rewards ─────────────────────────────────────────────────
 
@@ -142,24 +142,28 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
     }
 
     /// @inheritdoc IsDIEM
-    function liquidBuffer() public view override returns (uint256) {
-        return diem.balanceOf(address(this));
+    function withdrawalRequests(address account)
+        external
+        view
+        override
+        returns (uint256 amount, uint256 requestedAt)
+    {
+        WithdrawalRequest storage req = _withdrawalRequests[account];
+        return (req.amount, req.requestedAt);
     }
 
     /// @inheritdoc IsDIEM
-    function forwardStaked() public view override returns (uint256) {
-        (uint256 staked,,) = diemStaking.stakedInfos(address(this));
-        return staked;
-    }
-
-    /// @inheritdoc IsDIEM
-    function pendingUnstake() public view override returns (uint256) {
-        (,, uint256 pending) = diemStaking.stakedInfos(address(this));
-        return pending;
+    function veniceCooldownEnd() external view override returns (uint256) {
+        (, uint256 cooldownEnd,) = diemStaking.stakedInfos(address(this));
+        return cooldownEnd;
     }
 
     // ── Mutative — staking ──────────────────────────────────────────────
 
+    /**
+     * @notice Stake DIEM. Tokens are transferred in and immediately
+     *         forward-staked on Venice for compute credits.
+     */
     function stake(uint256 amount)
         external
         override
@@ -173,56 +177,120 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         totalStaked += amount;
         _balances[msg.sender] += amount;
 
-        // Interaction
+        // Interactions — pull DIEM then forward to Venice
         diem.safeTransferFrom(msg.sender, address(this), amount);
+        diemStaking.stake(amount);
 
         emit Staked(msg.sender, amount);
     }
 
-    function withdraw(uint256 amount)
+    /**
+     * @notice Request withdrawal. Starts 24h delay.
+     * @dev Deducts from staker's balance. Initiates Venice unstake
+     *      (which starts the 24h cooldown). Warning: Venice resets
+     *      the cooldown timer for ALL pending if called again.
+     *      Users with existing pending requests accumulate amounts.
+     */
+    function requestWithdraw(uint256 amount)
         external
         override
         nonReentrant
         updateReward(msg.sender)
     {
-        _withdraw(msg.sender, amount);
+        require(amount > 0, "sDIEM: zero amount");
+        require(_balances[msg.sender] >= amount, "sDIEM: insufficient balance");
+
+        // Effects
+        _balances[msg.sender] -= amount;
+        totalStaked -= amount;
+
+        WithdrawalRequest storage req = _withdrawalRequests[msg.sender];
+        req.amount += amount;
+        req.requestedAt = block.timestamp;
+        totalPendingWithdrawals += amount;
+
+        // Interaction — initiate Venice unstake (starts/resets cooldown)
+        diemStaking.initiateUnstake(amount);
+
+        emit WithdrawalRequested(msg.sender, amount);
     }
 
+    /**
+     * @notice Complete withdrawal after 24h delay.
+     * @dev Requires:
+     *      1. User's personal 24h delay has elapsed
+     *      2. Contract has enough liquid DIEM (call claimFromVenice first if needed)
+     */
+    function completeWithdraw()
+        external
+        override
+        nonReentrant
+    {
+        WithdrawalRequest storage req = _withdrawalRequests[msg.sender];
+        uint256 amount = req.amount;
+        require(amount > 0, "sDIEM: no pending withdrawal");
+        require(
+            block.timestamp >= req.requestedAt + WITHDRAWAL_DELAY,
+            "sDIEM: withdrawal delay not met"
+        );
+
+        uint256 liquid = diem.balanceOf(address(this));
+        require(liquid >= amount, "sDIEM: claim from Venice first");
+
+        // Effects
+        req.amount = 0;
+        req.requestedAt = 0;
+        totalPendingWithdrawals -= amount;
+
+        // Interaction
+        diem.safeTransfer(msg.sender, amount);
+
+        emit WithdrawalCompleted(msg.sender, amount);
+    }
+
+    /// @notice Claim accrued USDC rewards.
     function claimReward()
         public
         override
         nonReentrant
+        whenNotPaused
         updateReward(msg.sender)
     {
         _claimReward(msg.sender);
     }
 
+    /**
+     * @notice Request full withdrawal + claim rewards in one tx.
+     * @dev Only requests the withdrawal — user must call completeWithdraw()
+     *      after the 24h delay to actually receive DIEM.
+     */
     function exit()
         external
         override
         nonReentrant
+        whenNotPaused
         updateReward(msg.sender)
     {
-        _withdraw(msg.sender, _balances[msg.sender]);
+        uint256 bal = _balances[msg.sender];
+        if (bal > 0) {
+            // Effects
+            _balances[msg.sender] = 0;
+            totalStaked -= bal;
+
+            WithdrawalRequest storage req = _withdrawalRequests[msg.sender];
+            req.amount += bal;
+            req.requestedAt = block.timestamp;
+            totalPendingWithdrawals += bal;
+
+            // Interaction — initiate Venice unstake
+            diemStaking.initiateUnstake(bal);
+
+            emit WithdrawalRequested(msg.sender, bal);
+        }
         _claimReward(msg.sender);
     }
 
     // ── Internal ────────────────────────────────────────────────────────
-
-    function _withdraw(address user, uint256 amount) internal {
-        require(amount > 0, "sDIEM: zero amount");
-        require(_balances[user] >= amount, "sDIEM: insufficient balance");
-        require(diem.balanceOf(address(this)) >= amount, "sDIEM: buffer insufficient");
-
-        // Effects
-        totalStaked -= amount;
-        _balances[user] -= amount;
-
-        // Interaction
-        diem.safeTransfer(user, amount);
-
-        emit Withdrawn(user, amount);
-    }
 
     function _claimReward(address user) internal {
         uint256 reward = rewards[user];
@@ -235,6 +303,40 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
 
             emit RewardPaid(user, reward);
         }
+    }
+
+    // ── Permissionless — Venice management ──────────────────────────────
+
+    /**
+     * @notice Claim matured DIEM from Venice. Anyone can call.
+     * @dev Calls diemStaking.unstake() which transfers all pending
+     *      DIEM back after cooldown. Reverts if cooldown hasn't expired.
+     */
+    function claimFromVenice() external override nonReentrant {
+        (,, uint256 pending) = diemStaking.stakedInfos(address(this));
+        require(pending > 0, "sDIEM: nothing pending on Venice");
+
+        // Interaction
+        diemStaking.unstake();
+
+        emit VeniceClaimed(msg.sender, pending);
+    }
+
+    /**
+     * @notice Redeploy excess liquid DIEM to Venice. Anyone can call.
+     * @dev Any liquid DIEM beyond what's needed for pending withdrawals
+     *      is excess and should be earning Venice compute credits.
+     */
+    function redeployExcess() external override nonReentrant {
+        uint256 liquid = diem.balanceOf(address(this));
+        require(liquid > totalPendingWithdrawals, "sDIEM: no excess to redeploy");
+
+        uint256 excess = liquid - totalPendingWithdrawals;
+
+        // Interaction — forward excess to Venice
+        diemStaking.stake(excess);
+
+        emit ExcessRedeployed(msg.sender, excess);
     }
 
     // ── Operator — reward notification ──────────────────────────────────
@@ -270,61 +372,6 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         periodFinish = block.timestamp + REWARDS_DURATION;
 
         emit RewardNotified(reward, rewardRate, periodFinish);
-    }
-
-    // ── Operator — Venice forward-staking ──────────────────────────────
-
-    /**
-     * @notice Deploy idle DIEM from liquid buffer to Venice staking.
-     * @dev Calls DIEM.stake() which does an internal balance transfer.
-     *      Enforces buffer floor to ensure withdrawal liquidity.
-     * @param amount Amount of DIEM to forward-stake.
-     */
-    function deployToVenice(uint256 amount) external override onlyOperator nonReentrant {
-        require(amount > 0, "sDIEM: zero amount");
-
-        uint256 currentBuffer = diem.balanceOf(address(this));
-        require(currentBuffer >= amount, "sDIEM: insufficient buffer");
-
-        uint256 bufferAfter = currentBuffer - amount;
-        // Enforce buffer floor (skip check if totalStaked is 0 to avoid div-by-zero)
-        if (totalStaked > 0) {
-            require(
-                bufferAfter >= (totalStaked * BUFFER_FLOOR_BPS) / BPS,
-                "sDIEM: would breach buffer floor"
-            );
-        }
-
-        // Interaction — stake on DIEM contract
-        diemStaking.stake(amount);
-
-        emit DeployedToVenice(amount);
-    }
-
-    /**
-     * @notice Start unstaking DIEM from Venice to replenish buffer.
-     * @dev Initiates the 24h cooldown on the DIEM contract.
-     *      Warning: calling again while pending resets the cooldown timer.
-     * @param amount Amount of DIEM to unstake from Venice.
-     */
-    function initiateBufferReplenish(uint256 amount) external override onlyOperator nonReentrant {
-        require(amount > 0, "sDIEM: zero amount");
-
-        // Interaction — initiate unstake on DIEM contract
-        diemStaking.initiateUnstake(amount);
-
-        emit BufferReplenishInitiated(amount);
-    }
-
-    /**
-     * @notice Complete buffer replenishment after Venice cooldown expires.
-     * @dev Calls DIEM.unstake() which transfers pendingUnstakeAmount back.
-     */
-    function completeBufferReplenish() external override onlyOperator nonReentrant {
-        // Interaction — complete unstake on DIEM contract
-        diemStaking.unstake();
-
-        emit BufferReplenishCompleted(diem.balanceOf(address(this)));
     }
 
     // ── Admin ───────────────────────────────────────────────────────────

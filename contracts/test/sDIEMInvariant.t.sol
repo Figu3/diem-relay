@@ -8,8 +8,8 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 
 /**
  * @title sDIEMHandler
- * @notice Guided handler for invariant testing. Manages staking/withdrawing/
- *         claiming/rewarding/Venice operations with bounded inputs.
+ * @notice Guided handler for invariant testing. Manages staking, async
+ *         withdrawals, reward claiming, and permissionless Venice ops.
  */
 contract sDIEMHandler is Test {
     sDIEM public staking;
@@ -21,6 +21,7 @@ contract sDIEMHandler is Test {
 
     // Ghost variables — track what SHOULD be true
     uint256 public ghost_totalStaked;
+    uint256 public ghost_totalPendingWithdrawals;
     uint256 public ghost_totalRewardsNotified;
     uint256 public ghost_totalRewardsClaimed;
 
@@ -41,12 +42,6 @@ contract sDIEMHandler is Test {
         diemToken.setCooldownDuration(0);
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────
-
-    function _min(uint256 a, uint256 b) internal pure returns (uint256) {
-        return a < b ? a : b;
-    }
-
     // ── Actions ───────────────────────────────────────────────────────────
 
     function stake(uint256 actorSeed, uint256 amount) external {
@@ -62,21 +57,44 @@ contract sDIEMHandler is Test {
         ghost_totalStaked += amount;
     }
 
-    function withdraw(uint256 actorSeed, uint256 amount) external {
+    function requestWithdraw(uint256 actorSeed, uint256 amount) external {
         address actor = actors[actorSeed % actors.length];
         uint256 bal = staking.balanceOf(actor);
         if (bal == 0) return;
 
-        // Bound by both user balance and liquid buffer
-        uint256 buffer = staking.liquidBuffer();
-        if (buffer == 0) return;
-
-        amount = bound(amount, 1, _min(bal, buffer));
+        amount = bound(amount, 1, bal);
 
         vm.prank(actor);
-        staking.withdraw(amount);
+        staking.requestWithdraw(amount);
 
         ghost_totalStaked -= amount;
+        ghost_totalPendingWithdrawals += amount;
+    }
+
+    function completeWithdraw(uint256 actorSeed) external {
+        address actor = actors[actorSeed % actors.length];
+        (uint256 pending, uint256 requestedAt) = staking.withdrawalRequests(actor);
+        if (pending == 0) return;
+
+        // Ensure delay has passed
+        if (block.timestamp < requestedAt + staking.WITHDRAWAL_DELAY()) {
+            vm.warp(requestedAt + staking.WITHDRAWAL_DELAY());
+        }
+
+        // Claim from Venice if needed (cooldown is 0 in tests)
+        (,, uint256 venicePending) = diemToken.stakedInfos(address(staking));
+        if (venicePending > 0) {
+            staking.claimFromVenice();
+        }
+
+        // Only complete if enough liquid
+        uint256 liquid = diemToken.balanceOf(address(staking));
+        if (liquid < pending) return;
+
+        vm.prank(actor);
+        staking.completeWithdraw();
+
+        ghost_totalPendingWithdrawals -= pending;
     }
 
     function claimReward(uint256 actorSeed) external {
@@ -109,66 +127,44 @@ contract sDIEMHandler is Test {
         uint256 bal = staking.balanceOf(actor);
         if (bal == 0) return;
 
-        // Exit requires buffer >= full balance
-        uint256 buffer = staking.liquidBuffer();
-        if (buffer < bal) return;
-
         uint256 earned = staking.earned(actor);
 
         vm.prank(actor);
         staking.exit();
 
         ghost_totalStaked -= bal;
+        ghost_totalPendingWithdrawals += bal;
         ghost_totalRewardsClaimed += earned;
     }
 
-    // ── Venice actions ────────────────────────────────────────────────────
-
-    function deployToVenice(uint256 amount) external {
-        uint256 buffer = staking.liquidBuffer();
-        if (buffer == 0) return;
-
-        uint256 total = staking.totalStaked();
-        if (total == 0) return;
-
-        uint256 floor = (total * 500) / 10000; // 5% floor
-        if (buffer <= floor) return;
-
-        amount = bound(amount, 1, buffer - floor);
-
-        vm.prank(operator);
-        staking.deployToVenice(amount);
-    }
-
-    function initiateBufferReplenish(uint256 amount) external {
-        uint256 staked = staking.forwardStaked();
-        if (staked == 0) return;
-
-        amount = bound(amount, 1, staked);
-
-        vm.prank(operator);
-        staking.initiateBufferReplenish(amount);
-    }
-
-    function completeBufferReplenish() external {
-        uint256 pending = staking.pendingUnstake();
+    function claimFromVenice() external {
+        (,, uint256 pending) = diemToken.stakedInfos(address(staking));
         if (pending == 0) return;
 
-        vm.prank(operator);
-        staking.completeBufferReplenish();
+        staking.claimFromVenice();
+    }
+
+    function redeployExcess() external {
+        uint256 liquid = diemToken.balanceOf(address(staking));
+        uint256 pendingW = staking.totalPendingWithdrawals();
+        if (liquid <= pendingW) return;
+
+        staking.redeployExcess();
     }
 }
 
 /**
  * @title sDIEMInvariantTest
- * @notice Invariant tests for the sDIEM staking contract with Venice forward-staking.
+ * @notice Invariant tests for the sDIEM staking contract with async withdrawals
+ *         and permissionless Venice management.
  *
  * Key invariants:
- *   1. Conservation: liquidBuffer + forwardStaked + pendingUnstake == totalStaked
- *   2. Ghost tracking matches totalStaked
- *   3. No over-distribution: total claimed <= total notified
- *   4. Reward solvency: contract USDC >= unclaimed rewards
+ *   1. Ghost tracking matches totalStaked and totalPendingWithdrawals
+ *   2. No over-distribution: total claimed <= total notified
+ *   3. Reward solvency: contract USDC >= unclaimed rewards
+ *   4. Balance sum equals totalStaked
  *   5. rewardPerToken never decreases
+ *   6. Venice DIEM conservation: all DIEM is accounted for
  */
 contract sDIEMInvariantTest is Test {
     sDIEM public staking;
@@ -214,17 +210,7 @@ contract sDIEMInvariantTest is Test {
         targetContract(address(handler));
     }
 
-    // ── Invariant 1: DIEM conservation ──────────────────────────────────
-    // liquidBuffer + forwardStaked + pendingUnstake must always equal totalStaked.
-    // This holds even when DIEM is forward-staked on Venice.
-
-    function invariant_diemConservation() public view {
-        assertEq(
-            staking.liquidBuffer() + staking.forwardStaked() + staking.pendingUnstake(),
-            staking.totalStaked(),
-            "liquidBuffer + forwardStaked + pendingUnstake != totalStaked"
-        );
-    }
+    // ── Invariant 1: Ghost tracking matches contract state ───────────────
 
     function invariant_totalStakedMatchesGhost() public view {
         assertEq(
@@ -234,7 +220,15 @@ contract sDIEMInvariantTest is Test {
         );
     }
 
-    // ── Invariant 2: No over-distribution ───────────────────────────────
+    function invariant_totalPendingWithdrawalsMatchesGhost() public view {
+        assertEq(
+            staking.totalPendingWithdrawals(),
+            handler.ghost_totalPendingWithdrawals(),
+            "totalPendingWithdrawals != ghost"
+        );
+    }
+
+    // ── Invariant 2: No over-distribution ────────────────────────────────
     // Total rewards claimed must never exceed total rewards notified.
 
     function invariant_noOverDistribution() public view {
@@ -245,7 +239,7 @@ contract sDIEMInvariantTest is Test {
         );
     }
 
-    // ── Invariant 3: Reward solvency ────────────────────────────────────
+    // ── Invariant 3: Reward solvency ─────────────────────────────────────
     // The contract must always hold enough USDC to cover all unclaimed rewards.
 
     function invariant_rewardSolvency() public view {
@@ -261,7 +255,7 @@ contract sDIEMInvariantTest is Test {
         );
     }
 
-    // ── Invariant 4: Balance sum equals totalStaked ──────────────────────
+    // ── Invariant 4: Balance sum equals totalStaked ───────────────────────
 
     function invariant_balanceSumEqualsTotalStaked() public view {
         uint256 sum;
@@ -272,7 +266,7 @@ contract sDIEMInvariantTest is Test {
         assertEq(sum, staking.totalStaked(), "sum(balances) != totalStaked");
     }
 
-    // ── Invariant 5: rewardPerToken never decreases ─────────────────────
+    // ── Invariant 5: rewardPerToken never decreases ──────────────────────
 
     uint256 private lastRewardPerToken;
 
@@ -280,5 +274,28 @@ contract sDIEMInvariantTest is Test {
         uint256 current = staking.rewardPerToken();
         assertGe(current, lastRewardPerToken, "rewardPerToken decreased");
         lastRewardPerToken = current;
+    }
+
+    // ── Invariant 6: Venice DIEM conservation ────────────────────────────
+    // All DIEM that was staked is somewhere: Venice staked + Venice pending +
+    // liquid in contract. This must account for both active stakers and
+    // pending withdrawals.
+
+    function invariant_veniceDiemConservation() public view {
+        (uint256 veniceStaked,, uint256 venicePending) = diemToken.stakedInfos(address(staking));
+        uint256 liquid = diemToken.balanceOf(address(staking));
+
+        // Total DIEM accounted for = Venice staked + Venice pending + liquid
+        uint256 totalAccountedFor = veniceStaked + venicePending + liquid;
+
+        // This should equal totalStaked + totalPendingWithdrawals
+        // (totalStaked = DIEM still earning, totalPendingWithdrawals = DIEM owed to redeemers)
+        uint256 totalOwed = staking.totalStaked() + staking.totalPendingWithdrawals();
+
+        assertEq(
+            totalAccountedFor,
+            totalOwed,
+            "Venice DIEM != totalStaked + totalPendingWithdrawals"
+        );
     }
 }

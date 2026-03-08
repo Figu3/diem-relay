@@ -3,26 +3,45 @@ pragma solidity 0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+/**
+ * @title IsDIEM
+ * @notice Interface for Staked DIEM — deposit DIEM, earn USDC rewards.
+ *
+ * Synthetix StakingRewards fork with 24h async withdrawals.
+ *
+ * All deposited DIEM is forward-staked on Venice for compute credits.
+ * Withdrawals require a 24h delay (matching Venice's unstake cooldown).
+ *
+ * Venice management (claimFromVenice, redeployExcess) is fully
+ * permissionless — anyone can call when conditions are met.
+ */
 interface IsDIEM {
-    // ── Events ────────────────────────────────────────────────────────────
+    // ── Structs ─────────────────────────────────────────────────────────────
+
+    struct WithdrawalRequest {
+        uint256 amount;
+        uint256 requestedAt;
+    }
+
+    // ── Events ──────────────────────────────────────────────────────────────
+
     event Staked(address indexed user, uint256 amount);
-    event Withdrawn(address indexed user, uint256 amount);
+    event WithdrawalRequested(address indexed user, uint256 amount);
+    event WithdrawalCompleted(address indexed user, uint256 amount);
     event RewardPaid(address indexed user, uint256 reward);
     event RewardNotified(uint256 reward, uint256 rewardRate, uint256 periodFinish);
     event Paused(address indexed by);
     event Unpaused(address indexed by);
     event OperatorChanged(address indexed oldOperator, address indexed newOperator);
 
-    /// @notice Emitted when operator deploys DIEM from buffer to Venice staking.
-    event DeployedToVenice(uint256 amount);
+    /// @notice Emitted when anyone claims matured DIEM from Venice.
+    event VeniceClaimed(address indexed caller, uint256 amount);
 
-    /// @notice Emitted when operator initiates buffer replenishment from Venice.
-    event BufferReplenishInitiated(uint256 amount);
+    /// @notice Emitted when anyone redeploys excess liquid DIEM to Venice.
+    event ExcessRedeployed(address indexed caller, uint256 amount);
 
-    /// @notice Emitted when operator completes buffer replenishment after cooldown.
-    event BufferReplenishCompleted(uint256 newBufferBalance);
+    // ── Views ───────────────────────────────────────────────────────────────
 
-    // ── Views ─────────────────────────────────────────────────────────────
     function diem() external view returns (IERC20);
     function usdc() external view returns (IERC20);
     function operator() external view returns (address);
@@ -37,34 +56,50 @@ interface IsDIEM {
     function periodFinish() external view returns (uint256);
     function lastUpdateTime() external view returns (uint256);
 
-    /// @notice Liquid DIEM available for instant withdrawals.
-    function liquidBuffer() external view returns (uint256);
+    /// @notice Total DIEM currently pending withdrawal across all users.
+    function totalPendingWithdrawals() external view returns (uint256);
 
-    /// @notice DIEM currently forward-staked on Venice via DIEM contract.
-    function forwardStaked() external view returns (uint256);
+    /// @notice Withdrawal request for a specific user.
+    function withdrawalRequests(address account) external view returns (uint256 amount, uint256 requestedAt);
 
-    /// @notice DIEM in cooldown, pending unstake from Venice.
-    function pendingUnstake() external view returns (uint256);
+    /// @notice Venice cooldown end timestamp for this contract.
+    function veniceCooldownEnd() external view returns (uint256);
 
-    // ── Mutative ──────────────────────────────────────────────────────────
+    /// @notice Delay before withdrawals can be completed (matches Venice cooldown).
+    function WITHDRAWAL_DELAY() external view returns (uint256);
+
+    // ── Mutative — staking ──────────────────────────────────────────────────
+
+    /// @notice Stake DIEM. Tokens are forwarded to Venice immediately.
     function stake(uint256 amount) external;
-    function withdraw(uint256 amount) external;
+
+    /// @notice Request withdrawal. Starts 24h delay. Initiates Venice unstake.
+    function requestWithdraw(uint256 amount) external;
+
+    /// @notice Complete withdrawal after 24h delay + Venice cooldown.
+    function completeWithdraw() external;
+
+    /// @notice Claim accrued USDC rewards.
     function claimReward() external;
+
+    /// @notice Request full withdrawal + claim rewards in one tx.
     function exit() external;
 
-    // ── Operator ──────────────────────────────────────────────────────────
+    // ── Permissionless — Venice management ───────────────────────────────────
+
+    /// @notice Claim matured DIEM from Venice. Anyone can call.
+    function claimFromVenice() external;
+
+    /// @notice Redeploy excess liquid DIEM (above pending withdrawals) to Venice.
+    function redeployExcess() external;
+
+    // ── Operator ────────────────────────────────────────────────────────────
+
+    /// @notice Seed a new 24h USDC reward period.
     function notifyRewardAmount(uint256 reward) external;
 
-    /// @notice Deploy idle DIEM from buffer to Venice staking.
-    function deployToVenice(uint256 amount) external;
+    // ── Admin ───────────────────────────────────────────────────────────────
 
-    /// @notice Start unstaking DIEM from Venice to replenish buffer.
-    function initiateBufferReplenish(uint256 amount) external;
-
-    /// @notice Complete buffer replenishment after Venice cooldown expires.
-    function completeBufferReplenish() external;
-
-    // ── Admin ─────────────────────────────────────────────────────────────
     function pause() external;
     function unpause() external;
     function setOperator(address newOperator) external;

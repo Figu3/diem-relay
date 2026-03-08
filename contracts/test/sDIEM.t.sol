@@ -53,6 +53,23 @@ contract sDIEMTest is Test {
         staking.notifyRewardAmount(amount);
     }
 
+    /// @dev Stake, request, warp 24h, claim from Venice, complete — full async flow.
+    function _stakeAndWithdraw(address user, uint256 stakeAmount, uint256 withdrawAmount) internal {
+        vm.prank(user);
+        staking.stake(stakeAmount);
+
+        vm.prank(user);
+        staking.requestWithdraw(withdrawAmount);
+
+        vm.warp(block.timestamp + 24 hours);
+
+        // Claim from Venice to get liquid DIEM
+        staking.claimFromVenice();
+
+        vm.prank(user);
+        staking.completeWithdraw();
+    }
+
     // ── Constructor ─────────────────────────────────────────────────────
 
     function test_constructor_setsTokens() public view {
@@ -90,7 +107,11 @@ contract sDIEMTest is Test {
 
         assertEq(staking.balanceOf(alice), DIEM_AMOUNT);
         assertEq(staking.totalStaked(), DIEM_AMOUNT);
-        assertEq(diemToken.balanceOf(address(staking)), DIEM_AMOUNT);
+        // DIEM forwarded to Venice — contract holds 0 liquid DIEM
+        assertEq(diemToken.balanceOf(address(staking)), 0);
+        // Verify Venice got it
+        (uint256 staked,,) = diemToken.stakedInfos(address(staking));
+        assertEq(staked, DIEM_AMOUNT);
     }
 
     function test_stake_emitsEvent() public {
@@ -116,61 +137,242 @@ contract sDIEMTest is Test {
         staking.stake(DIEM_AMOUNT);
     }
 
-    // ── Withdrawing ─────────────────────────────────────────────────────
+    // ── Request Withdraw ────────────────────────────────────────────────
 
-    function test_withdraw_updatesBalances() public {
+    function test_requestWithdraw_updatesState() public {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
         vm.prank(alice);
-        staking.withdraw(DIEM_AMOUNT);
+        staking.requestWithdraw(DIEM_AMOUNT);
 
+        // Staked balance deducted
         assertEq(staking.balanceOf(alice), 0);
         assertEq(staking.totalStaked(), 0);
-        assertEq(diemToken.balanceOf(alice), 1000e18); // full balance restored
+
+        // Pending withdrawal tracked
+        (uint256 amount, uint256 requestedAt) = staking.withdrawalRequests(alice);
+        assertEq(amount, DIEM_AMOUNT);
+        assertEq(requestedAt, block.timestamp);
+        assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT);
     }
 
-    function test_withdraw_partialAmount() public {
+    function test_requestWithdraw_emitsEvent() public {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
-        vm.prank(alice);
-        staking.withdraw(DIEM_AMOUNT / 2);
+        vm.expectEmit(true, false, false, true);
+        emit IsDIEM.WithdrawalRequested(alice, DIEM_AMOUNT);
 
-        assertEq(staking.balanceOf(alice), DIEM_AMOUNT / 2);
-        assertEq(staking.totalStaked(), DIEM_AMOUNT / 2);
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
     }
 
-    function test_withdraw_revertsZeroAmount() public {
+    function test_requestWithdraw_revertsZeroAmount() public {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
         vm.prank(alice);
         vm.expectRevert("sDIEM: zero amount");
-        staking.withdraw(0);
+        staking.requestWithdraw(0);
     }
 
-    function test_withdraw_revertsInsufficientBalance() public {
+    function test_requestWithdraw_revertsInsufficientBalance() public {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
         vm.prank(alice);
         vm.expectRevert("sDIEM: insufficient balance");
-        staking.withdraw(DIEM_AMOUNT + 1);
+        staking.requestWithdraw(DIEM_AMOUNT + 1);
     }
 
-    function test_withdraw_allowedWhenPaused() public {
+    function test_requestWithdraw_partialAmount() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT / 2);
+
+        assertEq(staking.balanceOf(alice), DIEM_AMOUNT / 2);
+        assertEq(staking.totalStaked(), DIEM_AMOUNT / 2);
+        assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT / 2);
+    }
+
+    function test_requestWithdraw_accumulates() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        // First request
+        vm.prank(alice);
+        staking.requestWithdraw(30e18);
+
+        // Second request — accumulates amount, resets timer
+        vm.warp(block.timestamp + 12 hours);
+        vm.prank(alice);
+        staking.requestWithdraw(20e18);
+
+        (uint256 amount, uint256 requestedAt) = staking.withdrawalRequests(alice);
+        assertEq(amount, 50e18);
+        assertEq(requestedAt, block.timestamp); // Timer reset
+        assertEq(staking.totalPendingWithdrawals(), 50e18);
+    }
+
+    function test_requestWithdraw_allowedWhenPaused() public {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
         vm.prank(admin);
         staking.pause();
 
-        // Withdraw must succeed even when paused — users can always get funds out
+        // Request withdraw must succeed even when paused — users can always initiate exit
         vm.prank(alice);
-        staking.withdraw(DIEM_AMOUNT);
-        assertEq(diemToken.balanceOf(alice), 1000e18); // back to initial mint
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        (uint256 amount,) = staking.withdrawalRequests(alice);
+        assertEq(amount, DIEM_AMOUNT);
+    }
+
+    function test_requestWithdraw_initiatesVeniceUnstake() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        // Venice should have pending unstake
+        (uint256 staked,, uint256 pending) = diemToken.stakedInfos(address(staking));
+        assertEq(staked, 0);
+        assertEq(pending, DIEM_AMOUNT);
+    }
+
+    // ── Complete Withdraw ───────────────────────────────────────────────
+
+    function test_completeWithdraw_success() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        // Warp past 24h delay
+        vm.warp(block.timestamp + 24 hours);
+
+        // Claim from Venice first (permissionless)
+        staking.claimFromVenice();
+
+        uint256 balBefore = diemToken.balanceOf(alice);
+
+        vm.prank(alice);
+        staking.completeWithdraw();
+
+        assertEq(diemToken.balanceOf(alice), balBefore + DIEM_AMOUNT);
+        (uint256 amount,) = staking.withdrawalRequests(alice);
+        assertEq(amount, 0);
+        assertEq(staking.totalPendingWithdrawals(), 0);
+    }
+
+    function test_completeWithdraw_emitsEvent() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        vm.warp(block.timestamp + 24 hours);
+        staking.claimFromVenice();
+
+        vm.expectEmit(true, false, false, true);
+        emit IsDIEM.WithdrawalCompleted(alice, DIEM_AMOUNT);
+
+        vm.prank(alice);
+        staking.completeWithdraw();
+    }
+
+    function test_completeWithdraw_revertsNoRequest() public {
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: no pending withdrawal");
+        staking.completeWithdraw();
+    }
+
+    function test_completeWithdraw_revertsDelayNotMet() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        // Only 12 hours — not enough
+        vm.warp(block.timestamp + 12 hours);
+
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: withdrawal delay not met");
+        staking.completeWithdraw();
+    }
+
+    function test_completeWithdraw_revertsInsufficientLiquidity() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        vm.warp(block.timestamp + 24 hours);
+
+        // Don't call claimFromVenice — no liquid DIEM
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: claim from Venice first");
+        staking.completeWithdraw();
+    }
+
+    // ── Exit ────────────────────────────────────────────────────────────
+
+    function test_exit_requestsWithdrawAndClaimsRewards() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        _seedRewards(REWARD_AMOUNT);
+        vm.warp(block.timestamp + 24 hours);
+
+        uint256 usdcBefore = usdcToken.balanceOf(alice);
+
+        vm.prank(alice);
+        staking.exit();
+
+        // Staked balance is zero
+        assertEq(staking.balanceOf(alice), 0);
         assertEq(staking.totalStaked(), 0);
+
+        // USDC rewards claimed immediately
+        assertApproxEqAbs(
+            usdcToken.balanceOf(alice) - usdcBefore,
+            REWARD_AMOUNT,
+            REWARD_DUST
+        );
+
+        // DIEM NOT transferred yet — user must completeWithdraw after delay
+        (uint256 amount,) = staking.withdrawalRequests(alice);
+        assertEq(amount, DIEM_AMOUNT);
+        assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT);
+    }
+
+    function test_exit_withNothingStaked_onlyClaimsRewards() public {
+        // Alice stakes, earns rewards, then unstakes via requestWithdraw
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        _seedRewards(REWARD_AMOUNT);
+        vm.warp(block.timestamp + 24 hours);
+
+        // Request withdraw (but don't complete)
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        // Now exit with 0 staked — should still claim rewards
+        uint256 usdcBefore = usdcToken.balanceOf(alice);
+        vm.prank(alice);
+        staking.exit();
+
+        assertGt(usdcToken.balanceOf(alice), usdcBefore);
     }
 
     // ── Rewards ──────────────────────────────────────────────────────────
@@ -268,28 +470,126 @@ contract sDIEMTest is Test {
         assertEq(usdcToken.balanceOf(alice), balBefore);
     }
 
-    // ── Exit ────────────────────────────────────────────────────────────
+    // ── Permissionless Venice Management ─────────────────────────────────
 
-    function test_exit_withdrawsAndClaims() public {
+    function test_claimFromVenice_success() public {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
-        _seedRewards(REWARD_AMOUNT);
+        // Request withdraw to trigger initiateUnstake
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        // Warp past cooldown
         vm.warp(block.timestamp + 24 hours);
 
-        uint256 diemBefore = diemToken.balanceOf(alice);
-        uint256 usdcBefore = usdcToken.balanceOf(alice);
+        // Anyone can call claimFromVenice
+        vm.expectEmit(true, false, false, true);
+        emit IsDIEM.VeniceClaimed(bob, DIEM_AMOUNT);
+
+        vm.prank(bob); // bob calls, not alice
+        staking.claimFromVenice();
+
+        // DIEM now liquid in the contract
+        assertEq(diemToken.balanceOf(address(staking)), DIEM_AMOUNT);
+    }
+
+    function test_claimFromVenice_revertsNothingPending() public {
+        vm.expectRevert("sDIEM: nothing pending on Venice");
+        staking.claimFromVenice();
+    }
+
+    function test_redeployExcess_success() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        // Simulate excess liquid DIEM (e.g., someone accidentally sent DIEM to the contract)
+        uint256 excessAmount = 50e18;
+        diemToken.mint(address(staking), excessAmount);
+
+        uint256 liquid = diemToken.balanceOf(address(staking));
+        assertEq(liquid, excessAmount);
+        assertEq(staking.totalPendingWithdrawals(), 0);
+
+        vm.expectEmit(true, false, false, true);
+        emit IsDIEM.ExcessRedeployed(bob, excessAmount);
+
+        vm.prank(bob); // Anyone can call
+        staking.redeployExcess();
+
+        // DIEM back on Venice
+        assertEq(diemToken.balanceOf(address(staking)), 0);
+        (uint256 staked,,) = diemToken.stakedInfos(address(staking));
+        assertEq(staked, DIEM_AMOUNT + excessAmount);
+    }
+
+    function test_redeployExcess_revertsNoExcess() public {
+        vm.expectRevert("sDIEM: no excess to redeploy");
+        staking.redeployExcess();
+    }
+
+    function test_redeployExcess_respectsPendingWithdrawals() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        // Alice requests withdraw — starts pending
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        // Warp, claim from Venice — liquid = 100 (all pending returned)
+        vm.warp(block.timestamp + 24 hours);
+        staking.claimFromVenice();
+
+        // Simulate excess: mint extra DIEM on top of what's reserved for pending
+        uint256 excessAmount = DIEM_AMOUNT;
+        diemToken.mint(address(staking), excessAmount);
+
+        // liquid = 200 (100 from Venice + 100 minted), totalPendingWithdrawals = 100
+        uint256 liquid = diemToken.balanceOf(address(staking));
+        assertEq(liquid, 2 * DIEM_AMOUNT);
+        assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT);
+
+        staking.redeployExcess();
+
+        // Only excess redeployed, pending withdrawal DIEM stays liquid
+        assertEq(diemToken.balanceOf(address(staking)), DIEM_AMOUNT); // 100 reserved for alice
+    }
+
+    // ── Views ───────────────────────────────────────────────────────────
+
+    function test_views_withdrawalRequests() public {
+        // Initially empty
+        (uint256 amount, uint256 requestedAt) = staking.withdrawalRequests(alice);
+        assertEq(amount, 0);
+        assertEq(requestedAt, 0);
 
         vm.prank(alice);
-        staking.exit();
+        staking.stake(DIEM_AMOUNT);
 
-        assertEq(staking.balanceOf(alice), 0);
-        assertEq(diemToken.balanceOf(alice), diemBefore + DIEM_AMOUNT);
-        assertApproxEqAbs(
-            usdcToken.balanceOf(alice) - usdcBefore,
-            REWARD_AMOUNT,
-            REWARD_DUST
-        );
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        (amount, requestedAt) = staking.withdrawalRequests(alice);
+        assertEq(amount, DIEM_AMOUNT);
+        assertEq(requestedAt, block.timestamp);
+    }
+
+    function test_views_veniceCooldownEnd() public {
+        // Initially 0
+        assertEq(staking.veniceCooldownEnd(), 0);
+
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        // Cooldown should be block.timestamp + 24h
+        assertEq(staking.veniceCooldownEnd(), block.timestamp + 24 hours);
+    }
+
+    function test_views_WITHDRAWAL_DELAY() public view {
+        assertEq(staking.WITHDRAWAL_DELAY(), 24 hours);
     }
 
     // ── notifyRewardAmount ──────────────────────────────────────────────
@@ -387,247 +687,76 @@ contract sDIEMTest is Test {
         staking.setOperator(makeAddr("newOp"));
     }
 
-    // ── Venice forward-staking ──────────────────────────────────────────
+    // ── Full Async Withdrawal Flow ──────────────────────────────────────
 
-    function test_deployToVenice_success() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        // Deploy 90% to Venice, leaving 10% buffer
-        uint256 deployAmount = 90e18;
-        vm.expectEmit(false, false, false, true);
-        emit IsDIEM.DeployedToVenice(deployAmount);
-
-        vm.prank(operator);
-        staking.deployToVenice(deployAmount);
-
-        assertEq(staking.liquidBuffer(), 10e18);
-        assertEq(staking.forwardStaked(), 90e18);
-        assertEq(staking.pendingUnstake(), 0);
-        // totalStaked unchanged
-        assertEq(staking.totalStaked(), DIEM_AMOUNT);
-    }
-
-    function test_deployToVenice_revertsZero() public {
-        vm.prank(operator);
-        vm.expectRevert("sDIEM: zero amount");
-        staking.deployToVenice(0);
-    }
-
-    function test_deployToVenice_revertsNotOperator() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        vm.prank(alice);
-        vm.expectRevert("sDIEM: not operator");
-        staking.deployToVenice(10e18);
-    }
-
-    function test_deployToVenice_revertsInsufficientBuffer() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        vm.prank(operator);
-        vm.expectRevert("sDIEM: insufficient buffer");
-        staking.deployToVenice(DIEM_AMOUNT + 1);
-    }
-
-    function test_deployToVenice_revertsBufferFloor() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        // Buffer floor = 5% of totalStaked = 5e18
-        // Deploying 96e18 would leave only 4e18 buffer (below 5e18 floor)
-        vm.prank(operator);
-        vm.expectRevert("sDIEM: would breach buffer floor");
-        staking.deployToVenice(96e18);
-    }
-
-    function test_deployToVenice_maxDeployRespectsFloor() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        // Max deploy = 100 - 5% = 95e18
-        vm.prank(operator);
-        staking.deployToVenice(95e18);
-
-        assertEq(staking.liquidBuffer(), 5e18);
-        assertEq(staking.forwardStaked(), 95e18);
-    }
-
-    function test_initiateBufferReplenish_success() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        vm.prank(operator);
-        staking.deployToVenice(90e18);
-
-        vm.expectEmit(false, false, false, true);
-        emit IsDIEM.BufferReplenishInitiated(50e18);
-
-        vm.prank(operator);
-        staking.initiateBufferReplenish(50e18);
-
-        assertEq(staking.forwardStaked(), 40e18);
-        assertEq(staking.pendingUnstake(), 50e18);
-    }
-
-    function test_initiateBufferReplenish_revertsZero() public {
-        vm.prank(operator);
-        vm.expectRevert("sDIEM: zero amount");
-        staking.initiateBufferReplenish(0);
-    }
-
-    function test_initiateBufferReplenish_revertsNotOperator() public {
-        vm.prank(alice);
-        vm.expectRevert("sDIEM: not operator");
-        staking.initiateBufferReplenish(10e18);
-    }
-
-    function test_completeBufferReplenish_success() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        vm.prank(operator);
-        staking.deployToVenice(90e18);
-
-        vm.prank(operator);
-        staking.initiateBufferReplenish(50e18);
-
-        // Warp past 24h cooldown
-        vm.warp(block.timestamp + 24 hours);
-
-        vm.prank(operator);
-        staking.completeBufferReplenish();
-
-        // Buffer replenished: 10 + 50 = 60
-        assertEq(staking.liquidBuffer(), 60e18);
-        assertEq(staking.forwardStaked(), 40e18);
-        assertEq(staking.pendingUnstake(), 0);
-    }
-
-    function test_completeBufferReplenish_revertsDuringCooldown() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        vm.prank(operator);
-        staking.deployToVenice(90e18);
-
-        vm.prank(operator);
-        staking.initiateBufferReplenish(50e18);
-
-        // Don't warp — cooldown still active
-        vm.prank(operator);
-        vm.expectRevert("MockDIEM: cooldown active");
-        staking.completeBufferReplenish();
-    }
-
-    function test_completeBufferReplenish_revertsNotOperator() public {
-        vm.prank(alice);
-        vm.expectRevert("sDIEM: not operator");
-        staking.completeBufferReplenish();
-    }
-
-    function test_withdraw_revertsBufferInsufficient() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        // Deploy 90 to Venice, leaving only 10 in buffer
-        vm.prank(operator);
-        staking.deployToVenice(90e18);
-
-        // Alice tries to withdraw 20 but only 10 in buffer
-        vm.prank(alice);
-        vm.expectRevert("sDIEM: buffer insufficient");
-        staking.withdraw(20e18);
-    }
-
-    function test_withdraw_succedsWithinBuffer() public {
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-
-        vm.prank(operator);
-        staking.deployToVenice(90e18);
-
-        // Alice can withdraw up to buffer amount (10)
-        vm.prank(alice);
-        staking.withdraw(10e18);
-
-        assertEq(staking.balanceOf(alice), 90e18);
-        assertEq(staking.totalStaked(), 90e18);
-    }
-
-    function test_views_liquidBuffer_forwardStaked_pendingUnstake() public {
-        // Initial: all zero
-        assertEq(staking.liquidBuffer(), 0);
-        assertEq(staking.forwardStaked(), 0);
-        assertEq(staking.pendingUnstake(), 0);
-
-        // After staking
-        vm.prank(alice);
-        staking.stake(DIEM_AMOUNT);
-        assertEq(staking.liquidBuffer(), DIEM_AMOUNT);
-
-        // After deploying
-        vm.prank(operator);
-        staking.deployToVenice(80e18);
-        assertEq(staking.liquidBuffer(), 20e18);
-        assertEq(staking.forwardStaked(), 80e18);
-
-        // After initiating replenish
-        vm.prank(operator);
-        staking.initiateBufferReplenish(30e18);
-        assertEq(staking.forwardStaked(), 50e18);
-        assertEq(staking.pendingUnstake(), 30e18);
-
-        // After completing replenish
-        vm.warp(block.timestamp + 24 hours);
-        vm.prank(operator);
-        staking.completeBufferReplenish();
-        assertEq(staking.liquidBuffer(), 50e18);
-        assertEq(staking.forwardStaked(), 50e18);
-        assertEq(staking.pendingUnstake(), 0);
-    }
-
-    function test_fullVeniceFlow() public {
+    function test_fullAsyncWithdrawalFlow() public {
         // 1. Alice stakes
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
-        // 2. Operator deploys to Venice
-        vm.prank(operator);
-        staking.deployToVenice(90e18);
-
-        // 3. Seed rewards while staked on Venice
+        // 2. Seed rewards while staked
         _seedRewards(REWARD_AMOUNT);
         vm.warp(block.timestamp + 12 hours);
 
-        // 4. Operator initiates buffer replenish
-        vm.prank(operator);
-        staking.initiateBufferReplenish(90e18);
+        // 3. Alice requests full withdrawal
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
 
-        // 5. Wait for cooldown
+        // 4. Wait for delay + cooldown
         vm.warp(block.timestamp + 24 hours);
 
-        // 6. Complete replenish
-        vm.prank(operator);
-        staking.completeBufferReplenish();
+        // 5. Anyone claims from Venice
+        staking.claimFromVenice();
 
-        // 7. Alice exits with all funds + rewards
+        // 6. Alice completes withdrawal
         uint256 diemBefore = diemToken.balanceOf(alice);
-        uint256 usdcBefore = usdcToken.balanceOf(alice);
-
         vm.prank(alice);
-        staking.exit();
+        staking.completeWithdraw();
 
         assertEq(diemToken.balanceOf(alice), diemBefore + DIEM_AMOUNT);
-        assertGt(usdcToken.balanceOf(alice), usdcBefore); // earned some USDC
         assertEq(staking.totalStaked(), 0);
+        assertEq(staking.totalPendingWithdrawals(), 0);
+
+        // 7. Alice claims USDC rewards
+        uint256 usdcBefore = usdcToken.balanceOf(alice);
+        vm.prank(alice);
+        staking.claimReward();
+        assertGt(usdcToken.balanceOf(alice), usdcBefore);
+    }
+
+    function test_multiUserAsyncWithdrawal() public {
+        // Alice and Bob both stake
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+        vm.prank(bob);
+        staking.stake(DIEM_AMOUNT);
+
+        // Both request withdrawal
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+        vm.prank(bob);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT * 2);
+
+        // Wait and claim
+        vm.warp(block.timestamp + 24 hours);
+        staking.claimFromVenice();
+
+        // Both complete
+        vm.prank(alice);
+        staking.completeWithdraw();
+        vm.prank(bob);
+        staking.completeWithdraw();
+
+        assertEq(staking.totalPendingWithdrawals(), 0);
+        assertEq(diemToken.balanceOf(alice), 1000e18); // full balance restored
+        assertEq(diemToken.balanceOf(bob), 1000e18);
     }
 
     // ── Fuzz tests ──────────────────────────────────────────────────────
 
-    function testFuzz_stakeWithdraw(uint256 stakeAmount) public {
+    function testFuzz_requestCompleteWithdraw(uint256 stakeAmount) public {
         stakeAmount = bound(stakeAmount, 1, 1000e18);
 
         vm.prank(alice);
@@ -637,11 +766,20 @@ contract sDIEMTest is Test {
         assertEq(staking.totalStaked(), stakeAmount);
 
         vm.prank(alice);
-        staking.withdraw(stakeAmount);
+        staking.requestWithdraw(stakeAmount);
 
         assertEq(staking.balanceOf(alice), 0);
         assertEq(staking.totalStaked(), 0);
+        assertEq(staking.totalPendingWithdrawals(), stakeAmount);
+
+        vm.warp(block.timestamp + 24 hours);
+        staking.claimFromVenice();
+
+        vm.prank(alice);
+        staking.completeWithdraw();
+
         assertEq(diemToken.balanceOf(alice), 1000e18);
+        assertEq(staking.totalPendingWithdrawals(), 0);
     }
 
     function testFuzz_rewardAccrual(uint256 rewardAmount, uint256 elapsed) public {
@@ -695,26 +833,5 @@ contract sDIEMTest is Test {
             uint256 tolerance = (lhs > rhs ? lhs : rhs) / 1000;
             assertApproxEqAbs(lhs, rhs, tolerance + 1);
         }
-    }
-
-    function testFuzz_deployToVenice(uint256 stakeAmount, uint256 deployAmount) public {
-        stakeAmount = bound(stakeAmount, 10e18, 1000e18);
-
-        vm.prank(alice);
-        staking.stake(stakeAmount);
-
-        // Max deployable respecting 5% buffer floor
-        uint256 floor = (stakeAmount * 500) / 10000;
-        uint256 maxDeploy = stakeAmount - floor;
-        deployAmount = bound(deployAmount, 1, maxDeploy);
-
-        vm.prank(operator);
-        staking.deployToVenice(deployAmount);
-
-        // Conservation: liquidBuffer + forwardStaked == totalStaked
-        assertEq(
-            staking.liquidBuffer() + staking.forwardStaked(),
-            staking.totalStaked()
-        );
     }
 }
