@@ -51,7 +51,8 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
 
     // ── State — roles ───────────────────────────────────────────────────
 
-    address public immutable admin;
+    address public override admin;
+    address public override pendingAdmin;
     address public override operator;
     bool public override paused;
 
@@ -120,14 +121,21 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
 
     // ── Views ───────────────────────────────────────────────────────────
 
+    /// @notice Returns the staked DIEM balance for `account`.
+    /// @param account The address to query.
+    /// @return The staked balance.
     function balanceOf(address account) external view override returns (uint256) {
         return _balances[account];
     }
 
+    /// @notice The latest timestamp at which rewards are still accruing.
+    /// @return The lesser of `block.timestamp` and `periodFinish`.
     function lastTimeRewardApplicable() public view returns (uint256) {
         return block.timestamp < periodFinish ? block.timestamp : periodFinish;
     }
 
+    /// @notice Accumulated reward per staked token, scaled by 1e18.
+    /// @return The current cumulative reward-per-token value.
     function rewardPerToken() public view override returns (uint256) {
         if (totalStaked == 0) {
             return rewardPerTokenStored;
@@ -136,6 +144,9 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
             + ((lastTimeRewardApplicable() - lastUpdateTime) * rewardRate * PRECISION) / totalStaked;
     }
 
+    /// @notice Calculates the total USDC rewards earned by `account` so far.
+    /// @param account The staker address.
+    /// @return The claimable USDC reward amount.
     function earned(address account) public view override returns (uint256) {
         return (_balances[account] * (rewardPerToken() - userRewardPerTokenPaid[account])) / PRECISION
             + rewards[account];
@@ -176,12 +187,11 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         // Effects
         totalStaked += amount;
         _balances[msg.sender] += amount;
+        emit Staked(msg.sender, amount);
 
         // Interactions — pull DIEM then forward to Venice
         diem.safeTransferFrom(msg.sender, address(this), amount);
         diemStaking.stake(amount);
-
-        emit Staked(msg.sender, amount);
     }
 
     /**
@@ -208,11 +218,10 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         req.amount += amount;
         req.requestedAt = block.timestamp;
         totalPendingWithdrawals += amount;
+        emit WithdrawalRequested(msg.sender, amount);
 
         // Interaction — initiate Venice unstake (starts/resets cooldown)
         diemStaking.initiateUnstake(amount);
-
-        emit WithdrawalRequested(msg.sender, amount);
     }
 
     /**
@@ -241,11 +250,10 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         req.amount = 0;
         req.requestedAt = 0;
         totalPendingWithdrawals -= amount;
+        emit WithdrawalCompleted(msg.sender, amount);
 
         // Interaction
         diem.safeTransfer(msg.sender, amount);
-
-        emit WithdrawalCompleted(msg.sender, amount);
     }
 
     /// @notice Claim accrued USDC rewards.
@@ -263,6 +271,12 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
      * @notice Request full withdrawal + claim rewards in one tx.
      * @dev Only requests the withdrawal — user must call completeWithdraw()
      *      after the 24h delay to actually receive DIEM.
+     *
+     *      Slither H-1 note: _claimReward() reads `rewards[user]` which was
+     *      already settled by the `updateReward` modifier before any state
+     *      mutation. The external call in _claimReward (usdc.safeTransfer)
+     *      follows the CEI pattern and is guarded by `nonReentrant`.
+     *      False positive — safe as-is.
      */
     function exit()
         external
@@ -281,11 +295,10 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
             req.amount += bal;
             req.requestedAt = block.timestamp;
             totalPendingWithdrawals += bal;
+            emit WithdrawalRequested(msg.sender, bal);
 
             // Interaction — initiate Venice unstake
             diemStaking.initiateUnstake(bal);
-
-            emit WithdrawalRequested(msg.sender, bal);
         }
         _claimReward(msg.sender);
     }
@@ -297,11 +310,10 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         if (reward > 0) {
             // Effects
             rewards[user] = 0;
+            emit RewardPaid(user, reward);
 
             // Interaction
             usdc.safeTransfer(user, reward);
-
-            emit RewardPaid(user, reward);
         }
     }
 
@@ -316,10 +328,11 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         (,, uint256 pending) = diemStaking.stakedInfos(address(this));
         require(pending > 0, "sDIEM: nothing pending on Venice");
 
+        // Effects — event before external call
+        emit VeniceClaimed(msg.sender, pending);
+
         // Interaction
         diemStaking.unstake();
-
-        emit VeniceClaimed(msg.sender, pending);
     }
 
     /**
@@ -333,10 +346,11 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
 
         uint256 excess = liquid - totalPendingWithdrawals;
 
+        // Effects — event before external call
+        emit ExcessRedeployed(msg.sender, excess);
+
         // Interaction — forward excess to Venice
         diemStaking.stake(excess);
-
-        emit ExcessRedeployed(msg.sender, excess);
     }
 
     // ── Operator — reward notification ──────────────────────────────────
@@ -391,5 +405,33 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         address oldOperator = operator;
         operator = newOperator;
         emit OperatorChanged(oldOperator, newOperator);
+    }
+
+    function transferAdmin(address newAdmin) external override onlyAdmin {
+        require(newAdmin != address(0), "sDIEM: zero admin");
+        pendingAdmin = newAdmin;
+        emit AdminTransferStarted(admin, newAdmin);
+    }
+
+    /// @notice Pending admin accepts the role, completing the two-step transfer.
+    function acceptAdmin() external override {
+        require(msg.sender == pendingAdmin, "sDIEM: not pending admin");
+        address oldAdmin = admin;
+        admin = msg.sender;
+        pendingAdmin = address(0);
+        emit AdminTransferred(oldAdmin, msg.sender);
+    }
+
+    /// @inheritdoc IsDIEM
+    function recoverERC20(
+        address token,
+        address to,
+        uint256 amount
+    ) external override onlyAdmin {
+        require(token != address(diem), "sDIEM: cannot recover DIEM");
+        require(token != address(usdc), "sDIEM: cannot recover USDC");
+        require(to != address(0), "sDIEM: zero to");
+        IERC20(token).safeTransfer(to, amount);
+        emit TokenRecovered(token, to, amount);
     }
 }

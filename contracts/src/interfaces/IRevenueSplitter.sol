@@ -38,6 +38,12 @@ interface IRevenueSplitter {
     /// @notice Emitted when admin updates the max slippage.
     event MaxSlippageUpdated(uint256 oldSlippage, uint256 newSlippage);
 
+    /// @notice Emitted when admin updates the oracle pool.
+    event OraclePoolUpdated(address indexed oldPool, address indexed newPool);
+
+    /// @notice Emitted when admin updates the TWAP granularity.
+    event TwapGranularityUpdated(uint256 oldGranularity, uint256 newGranularity);
+
     event Paused(address indexed by);
     event Unpaused(address indexed by);
     event AdminTransferStarted(address indexed currentAdmin, address indexed pendingAdmin);
@@ -57,6 +63,15 @@ interface IRevenueSplitter {
 
     /// @notice The DEX router used for USDC→DIEM swaps.
     function swapRouter() external view returns (address);
+
+    /// @notice Aerodrome pool used for TWAP oracle queries.
+    function oraclePool() external view returns (address);
+
+    /// @notice Number of observation periods for TWAP calculation.
+    function twapGranularity() external view returns (uint256);
+
+    /// @notice Aerodrome factory address for swap routing.
+    function aeroFactory() external view returns (address);
 
     /// @notice Current USDC balance available for distribution.
     function pendingRevenue() external view returns (uint256);
@@ -89,6 +104,12 @@ interface IRevenueSplitter {
 
     /// @notice Set maximum slippage for swaps (in bps).
     function setMaxSlippage(uint256 newSlippage) external;
+
+    /// @notice Set the Aerodrome pool used for TWAP oracle.
+    function setOraclePool(address newPool) external;
+
+    /// @notice Set the TWAP observation granularity.
+    function setTwapGranularity(uint256 newGranularity) external;
 
     function pause() external;
     function unpause() external;

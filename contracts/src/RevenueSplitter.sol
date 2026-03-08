@@ -7,7 +7,8 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IRevenueSplitter} from "./interfaces/IRevenueSplitter.sol";
 import {IsDIEM} from "./interfaces/IsDIEM.sol";
 import {IcsDIEM} from "./interfaces/IcsDIEM.sol";
-import {ISwapRouter} from "./interfaces/ISwapRouter.sol";
+import {IAerodromePool} from "./interfaces/IAerodromePool.sol";
+import {IAerodromeRouter} from "./interfaces/IAerodromeRouter.sol";
 
 /**
  * @title RevenueSplitter
@@ -15,19 +16,21 @@ import {ISwapRouter} from "./interfaces/ISwapRouter.sol";
  *
  * Receives USDC revenue (from Venice compute credit earnings) and splits it:
  *   - sDIEM portion: USDC transferred + notifyRewardAmount() called
- *   - csDIEM portion: USDC swapped → DIEM via DEX router, then donated to csDIEM
+ *   - csDIEM portion: USDC swapped → DIEM via Aerodrome, then donated to csDIEM
  *
  * `distribute()` is fully permissionless — anyone can trigger it when
  * the contract holds USDC above the minimum threshold. This removes
  * the need for a centralized operator to manage revenue distribution.
  *
- * The swap uses a configurable DEX router (Uniswap V3 / Aerodrome / etc.)
- * with admin-set max slippage protection.
+ * Anti-sandwich protection:
+ *   Uses Aerodrome's on-chain TWAP oracle to compute a fair price floor.
+ *   `amountOutMin = twapQuote * (1 - maxSlippageBps / 10000)`
+ *   Default twapGranularity=4 with 1800s periodSize ≈ 2-hour TWAP window.
  *
  * Security features:
  *   - Two-step admin transfer
  *   - Emergency pause
- *   - Max slippage protection on swaps
+ *   - TWAP-based slippage protection (anti-sandwich)
  *   - Minimum distribution threshold (prevents dust distribution)
  *   - ReentrancyGuard on distribute
  *   - Token recovery for accidental sends (not USDC)
@@ -46,8 +49,8 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     IsDIEM public immutable sdiem;
     IcsDIEM public immutable csdiem;
 
-    /// @notice Uniswap V3 pool fee tier for USDC/DIEM pair.
-    uint24 public immutable poolFee;
+    /// @notice Aerodrome factory for constructing swap routes.
+    address public immutable override aeroFactory;
 
     // ── State — roles ───────────────────────────────────────────────────
 
@@ -66,8 +69,15 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     /// @notice Maximum slippage for USDC→DIEM swap (in bps).
     uint256 public override maxSlippageBps;
 
-    /// @notice DEX router for USDC→DIEM swaps.
+    /// @notice Aerodrome router for USDC→DIEM swaps.
     address public override swapRouter;
+
+    /// @notice Aerodrome pool used for TWAP oracle queries.
+    address public override oraclePool;
+
+    /// @notice Number of observation periods for TWAP.
+    /// Default 4 with 1800s periodSize ≈ 2-hour window.
+    uint256 public override twapGranularity;
 
     // ── Modifiers ───────────────────────────────────────────────────────
 
@@ -89,31 +99,38 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         address _sdiem,
         address _csdiem,
         address _swapRouter,
-        uint24 _poolFee,
+        address _oraclePool,
+        address _aeroFactory,
         address _admin,
         uint256 _sdiemBps,
         uint256 _minDistribution,
-        uint256 _maxSlippageBps
+        uint256 _maxSlippageBps,
+        uint256 _twapGranularity
     ) {
         require(_usdc != address(0), "RevenueSplitter: zero usdc");
         require(_diem != address(0), "RevenueSplitter: zero diem");
         require(_sdiem != address(0), "RevenueSplitter: zero sdiem");
         require(_csdiem != address(0), "RevenueSplitter: zero csdiem");
         require(_swapRouter != address(0), "RevenueSplitter: zero router");
+        require(_oraclePool != address(0), "RevenueSplitter: zero oracle pool");
+        require(_aeroFactory != address(0), "RevenueSplitter: zero factory");
         require(_admin != address(0), "RevenueSplitter: zero admin");
         require(_sdiemBps <= BPS_DENOMINATOR, "RevenueSplitter: bps > 10000");
         require(_maxSlippageBps <= 1000, "RevenueSplitter: slippage > 10%");
+        require(_twapGranularity > 0, "RevenueSplitter: zero granularity");
 
         usdc = IERC20(_usdc);
         diem = IERC20(_diem);
         sdiem = IsDIEM(_sdiem);
         csdiem = IcsDIEM(_csdiem);
         swapRouter = _swapRouter;
-        poolFee = _poolFee;
+        oraclePool = _oraclePool;
+        aeroFactory = _aeroFactory;
         admin = _admin;
         sdiemBps = _sdiemBps;
         minDistribution = _minDistribution;
         maxSlippageBps = _maxSlippageBps;
+        twapGranularity = _twapGranularity;
     }
 
     // ── Views ───────────────────────────────────────────────────────────
@@ -170,26 +187,37 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     }
 
     function _swapUsdcToDiem(uint256 usdcAmount) internal returns (uint256) {
-        // Approve router to spend USDC
+        // 1. Query TWAP oracle for fair price
+        uint256 twapOut = IAerodromePool(oraclePool).quote(
+            address(usdc), usdcAmount, twapGranularity
+        );
+
+        // 2. Apply slippage tolerance: amountOutMin = twapOut * (1 - maxSlippageBps / 10000)
+        uint256 amountOutMin = (twapOut * (BPS_DENOMINATOR - maxSlippageBps)) / BPS_DENOMINATOR;
+
+        // 3. Approve router to spend USDC
         usdc.safeIncreaseAllowance(swapRouter, usdcAmount);
 
-        // Calculate minimum output with slippage protection.
-        // amountOutMinimum = 0 here because we rely on maxSlippageBps
-        // check after the swap. In production, an oracle-based floor
-        // should be added for stronger protection.
-        // For now, we accept any output > 0 and let the admin-configured
-        // maxSlippageBps serve as the guardrail via front-end quoting.
-        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
-            tokenIn: address(usdc),
-            tokenOut: address(diem),
-            fee: poolFee,
-            recipient: address(this),
-            amountIn: usdcAmount,
-            amountOutMinimum: 0,
-            sqrtPriceLimitX96: 0
+        // 4. Build single-hop route: USDC → DIEM (volatile pair)
+        IAerodromeRouter.Route[] memory routes = new IAerodromeRouter.Route[](1);
+        routes[0] = IAerodromeRouter.Route({
+            from: address(usdc),
+            to: address(diem),
+            stable: false,
+            factory: aeroFactory
         });
 
-        uint256 amountOut = ISwapRouter(swapRouter).exactInputSingle(params);
+        // 5. Execute swap with TWAP-derived minimum output
+        uint256[] memory amounts = IAerodromeRouter(swapRouter).swapExactTokensForTokens(
+            usdcAmount,
+            amountOutMin,
+            routes,
+            address(this),
+            block.timestamp
+        );
+
+        // amounts[0] = input, amounts[1] = output for single-hop
+        uint256 amountOut = amounts[amounts.length - 1];
         require(amountOut > 0, "RevenueSplitter: swap returned zero");
 
         return amountOut;
@@ -226,6 +254,22 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         uint256 old = maxSlippageBps;
         maxSlippageBps = newSlippage;
         emit MaxSlippageUpdated(old, newSlippage);
+    }
+
+    /// @inheritdoc IRevenueSplitter
+    function setOraclePool(address newPool) external override onlyAdmin {
+        require(newPool != address(0), "RevenueSplitter: zero oracle pool");
+        address old = oraclePool;
+        oraclePool = newPool;
+        emit OraclePoolUpdated(old, newPool);
+    }
+
+    /// @inheritdoc IRevenueSplitter
+    function setTwapGranularity(uint256 newGranularity) external override onlyAdmin {
+        require(newGranularity > 0, "RevenueSplitter: zero granularity");
+        uint256 old = twapGranularity;
+        twapGranularity = newGranularity;
+        emit TwapGranularityUpdated(old, newGranularity);
     }
 
     /// @inheritdoc IRevenueSplitter

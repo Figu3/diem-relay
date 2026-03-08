@@ -10,6 +10,10 @@ contracts/out/
 contracts/broadcast/*/31337/
 contracts/broadcast/**/dry-run/
 
+# ── Frontend (Next.js) ─────────────────────────────────────────
+app/next-env.d.ts
+.next/
+
 # ── Shared ────────────────────────────────────────────────────
 .env
 .env.*

@@ -687,6 +687,68 @@ contract sDIEMTest is Test {
         staking.setOperator(makeAddr("newOp"));
     }
 
+    // ── Two-step admin transfer ───────────────────────────────────────────
+
+    function test_transferAdmin() public {
+        vm.prank(admin);
+        staking.transferAdmin(bob);
+        assertEq(staking.pendingAdmin(), bob);
+        assertEq(staking.admin(), admin); // Not changed yet
+
+        vm.prank(bob);
+        staking.acceptAdmin();
+        assertEq(staking.admin(), bob);
+        assertEq(staking.pendingAdmin(), address(0));
+    }
+
+    function test_transferAdmin_revertsZero() public {
+        vm.prank(admin);
+        vm.expectRevert("sDIEM: zero admin");
+        staking.transferAdmin(address(0));
+    }
+
+    function test_acceptAdmin_revertsWrongCaller() public {
+        vm.prank(admin);
+        staking.transferAdmin(bob);
+
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: not pending admin");
+        staking.acceptAdmin();
+    }
+
+    // ── Token recovery ────────────────────────────────────────────────────
+
+    function test_recoverERC20() public {
+        MockERC20 randomToken = new MockERC20("Random", "RND", 18);
+        randomToken.mint(address(staking), 100e18);
+
+        vm.prank(admin);
+        staking.recoverERC20(address(randomToken), admin, 100e18);
+
+        assertEq(randomToken.balanceOf(admin), 100e18);
+    }
+
+    function test_recoverERC20_cannotRecoverDiem() public {
+        vm.prank(admin);
+        vm.expectRevert("sDIEM: cannot recover DIEM");
+        staking.recoverERC20(address(diemToken), admin, 100e18);
+    }
+
+    function test_recoverERC20_cannotRecoverUsdc() public {
+        vm.prank(admin);
+        vm.expectRevert("sDIEM: cannot recover USDC");
+        staking.recoverERC20(address(usdcToken), admin, 100e6);
+    }
+
+    function test_recoverERC20_revertsZeroTo() public {
+        MockERC20 randomToken = new MockERC20("Random", "RND", 18);
+        randomToken.mint(address(staking), 100e18);
+
+        vm.prank(admin);
+        vm.expectRevert("sDIEM: zero to");
+        staking.recoverERC20(address(randomToken), address(0), 100e18);
+    }
+
     // ── Full Async Withdrawal Flow ──────────────────────────────────────
 
     function test_fullAsyncWithdrawalFlow() public {

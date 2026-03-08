@@ -121,12 +121,16 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
         emit Unpaused(msg.sender);
     }
 
+    /// @notice Update the minimum deposit amount.
+    /// @param newMin New minimum in deposit token units (6 decimals for USDC).
     function setMinDeposit(uint256 newMin) external override onlyAdmin {
         uint256 oldMin = minDeposit;
         minDeposit = newMin;
         emit MinDepositChanged(oldMin, newMin);
     }
 
+    /// @notice Transfer admin role to a new address.
+    /// @param newAdmin The new admin address (must not be zero).
     function setAdmin(address newAdmin) external override onlyAdmin {
         require(newAdmin != address(0), "DIEMVault: zero admin");
         address oldAdmin = admin;

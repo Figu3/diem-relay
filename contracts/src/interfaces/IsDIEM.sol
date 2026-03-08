@@ -33,6 +33,9 @@ interface IsDIEM {
     event Paused(address indexed by);
     event Unpaused(address indexed by);
     event OperatorChanged(address indexed oldOperator, address indexed newOperator);
+    event AdminTransferStarted(address indexed currentAdmin, address indexed pendingAdmin);
+    event AdminTransferred(address indexed oldAdmin, address indexed newAdmin);
+    event TokenRecovered(address indexed token, address indexed to, uint256 amount);
 
     /// @notice Emitted when anyone claims matured DIEM from Venice.
     event VeniceClaimed(address indexed caller, uint256 amount);
@@ -44,6 +47,8 @@ interface IsDIEM {
 
     function diem() external view returns (IERC20);
     function usdc() external view returns (IERC20);
+    function admin() external view returns (address);
+    function pendingAdmin() external view returns (address);
     function operator() external view returns (address);
     function paused() external view returns (bool);
 
@@ -103,4 +108,10 @@ interface IsDIEM {
     function pause() external;
     function unpause() external;
     function setOperator(address newOperator) external;
+    function transferAdmin(address newAdmin) external;
+    function acceptAdmin() external;
+
+    /// @notice Recover tokens accidentally sent to the contract.
+    /// @dev Cannot recover DIEM or USDC.
+    function recoverERC20(address token, address to, uint256 amount) external;
 }
