@@ -3,16 +3,17 @@ pragma solidity 0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {sDIEM} from "../src/sDIEM.sol";
+import {MockDIEMStaking} from "./mocks/MockDIEMStaking.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 /**
  * @title sDIEMHandler
  * @notice Guided handler for invariant testing. Manages staking/withdrawing/
- *         claiming/rewarding with bounded inputs and realistic sequencing.
+ *         claiming/rewarding/Venice operations with bounded inputs.
  */
 contract sDIEMHandler is Test {
     sDIEM public staking;
-    MockERC20 public diemToken;
+    MockDIEMStaking public diemToken;
     MockERC20 public usdcToken;
 
     address[] public actors;
@@ -25,7 +26,7 @@ contract sDIEMHandler is Test {
 
     constructor(
         sDIEM _staking,
-        MockERC20 _diem,
+        MockDIEMStaking _diem,
         MockERC20 _usdc,
         address[] memory _actors,
         address _operator
@@ -35,14 +36,25 @@ contract sDIEMHandler is Test {
         usdcToken = _usdc;
         actors = _actors;
         operator = _operator;
+
+        // Set cooldown to 0 for instant unstake in invariant testing
+        diemToken.setCooldownDuration(0);
     }
 
-    // ── Actions ─────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    function _min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+    // ── Actions ───────────────────────────────────────────────────────────
 
     function stake(uint256 actorSeed, uint256 amount) external {
         address actor = actors[actorSeed % actors.length];
-        amount = bound(amount, 1, diemToken.balanceOf(actor));
-        if (amount == 0) return;
+        uint256 bal = diemToken.balanceOf(actor);
+        if (bal == 0) return;
+
+        amount = bound(amount, 1, bal);
 
         vm.prank(actor);
         staking.stake(amount);
@@ -55,7 +67,11 @@ contract sDIEMHandler is Test {
         uint256 bal = staking.balanceOf(actor);
         if (bal == 0) return;
 
-        amount = bound(amount, 1, bal);
+        // Bound by both user balance and liquid buffer
+        uint256 buffer = staking.liquidBuffer();
+        if (buffer == 0) return;
+
+        amount = bound(amount, 1, _min(bal, buffer));
 
         vm.prank(actor);
         staking.withdraw(amount);
@@ -93,6 +109,10 @@ contract sDIEMHandler is Test {
         uint256 bal = staking.balanceOf(actor);
         if (bal == 0) return;
 
+        // Exit requires buffer >= full balance
+        uint256 buffer = staking.liquidBuffer();
+        if (buffer < bal) return;
+
         uint256 earned = staking.earned(actor);
 
         vm.prank(actor);
@@ -101,20 +121,58 @@ contract sDIEMHandler is Test {
         ghost_totalStaked -= bal;
         ghost_totalRewardsClaimed += earned;
     }
+
+    // ── Venice actions ────────────────────────────────────────────────────
+
+    function deployToVenice(uint256 amount) external {
+        uint256 buffer = staking.liquidBuffer();
+        if (buffer == 0) return;
+
+        uint256 total = staking.totalStaked();
+        if (total == 0) return;
+
+        uint256 floor = (total * 500) / 10000; // 5% floor
+        if (buffer <= floor) return;
+
+        amount = bound(amount, 1, buffer - floor);
+
+        vm.prank(operator);
+        staking.deployToVenice(amount);
+    }
+
+    function initiateBufferReplenish(uint256 amount) external {
+        uint256 staked = staking.forwardStaked();
+        if (staked == 0) return;
+
+        amount = bound(amount, 1, staked);
+
+        vm.prank(operator);
+        staking.initiateBufferReplenish(amount);
+    }
+
+    function completeBufferReplenish() external {
+        uint256 pending = staking.pendingUnstake();
+        if (pending == 0) return;
+
+        vm.prank(operator);
+        staking.completeBufferReplenish();
+    }
 }
 
 /**
  * @title sDIEMInvariantTest
- * @notice Invariant tests for the sDIEM staking contract.
+ * @notice Invariant tests for the sDIEM staking contract with Venice forward-staking.
  *
  * Key invariants:
- *   1. Conservation: totalStaked == sum of all balances == DIEM in contract
- *   2. No over-distribution: total claimed <= total notified
- *   3. Reward solvency: contract USDC >= unclaimed rewards
+ *   1. Conservation: liquidBuffer + forwardStaked + pendingUnstake == totalStaked
+ *   2. Ghost tracking matches totalStaked
+ *   3. No over-distribution: total claimed <= total notified
+ *   4. Reward solvency: contract USDC >= unclaimed rewards
+ *   5. rewardPerToken never decreases
  */
 contract sDIEMInvariantTest is Test {
     sDIEM public staking;
-    MockERC20 public diemToken;
+    MockDIEMStaking public diemToken;
     MockERC20 public usdcToken;
     sDIEMHandler public handler;
 
@@ -123,7 +181,7 @@ contract sDIEMInvariantTest is Test {
     address[] actors;
 
     function setUp() public {
-        diemToken = new MockERC20("DIEM", "DIEM", 18);
+        diemToken = new MockDIEMStaking();
         usdcToken = new MockERC20("USDC", "USDC", 6);
 
         staking = new sDIEM(
@@ -157,14 +215,14 @@ contract sDIEMInvariantTest is Test {
     }
 
     // ── Invariant 1: DIEM conservation ──────────────────────────────────
-    // The contract's DIEM balance must always equal totalStaked.
-    // totalStaked must always equal the handler's ghost tracking.
+    // liquidBuffer + forwardStaked + pendingUnstake must always equal totalStaked.
+    // This holds even when DIEM is forward-staked on Venice.
 
     function invariant_diemConservation() public view {
         assertEq(
-            diemToken.balanceOf(address(staking)),
+            staking.liquidBuffer() + staking.forwardStaked() + staking.pendingUnstake(),
             staking.totalStaked(),
-            "DIEM balance != totalStaked"
+            "liquidBuffer + forwardStaked + pendingUnstake != totalStaked"
         );
     }
 
@@ -189,8 +247,6 @@ contract sDIEMInvariantTest is Test {
 
     // ── Invariant 3: Reward solvency ────────────────────────────────────
     // The contract must always hold enough USDC to cover all unclaimed rewards.
-    // (unclaimed = notified - claimed - still-streaming)
-    // Simplified: contract USDC balance >= sum of all earned()
 
     function invariant_rewardSolvency() public view {
         uint256 totalUnclaimed;
@@ -206,7 +262,6 @@ contract sDIEMInvariantTest is Test {
     }
 
     // ── Invariant 4: Balance sum equals totalStaked ──────────────────────
-    // Sum of individual balances must equal totalStaked.
 
     function invariant_balanceSumEqualsTotalStaked() public view {
         uint256 sum;

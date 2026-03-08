@@ -101,7 +101,10 @@ contract MockDIEMStaking is ERC20, IDIEMStaking {
         return _totalStaked;
     }
 
-    // balanceOf is inherited from ERC20 and satisfies IDIEMStaking.balanceOf
+    /// @notice Explicit override to satisfy both ERC20 and IDIEMStaking.
+    function balanceOf(address account) public view override(ERC20, IDIEMStaking) returns (uint256) {
+        return super.balanceOf(account);
+    }
 
     // ── Test helpers ────────────────────────────────────────────────────
 

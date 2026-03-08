@@ -22,7 +22,13 @@ import {
 
 validateConfig();
 
-const app = new Hono();
+type Env = {
+  Variables: {
+    borrower: string;
+  };
+};
+
+const app = new Hono<Env>();
 
 app.use("*", cors());
 app.use("*", logger());

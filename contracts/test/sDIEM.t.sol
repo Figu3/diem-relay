@@ -4,11 +4,12 @@ pragma solidity 0.8.24;
 import {Test} from "forge-std/Test.sol";
 import {sDIEM} from "../src/sDIEM.sol";
 import {IsDIEM} from "../src/interfaces/IsDIEM.sol";
+import {MockDIEMStaking} from "./mocks/MockDIEMStaking.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
 contract sDIEMTest is Test {
     sDIEM public staking;
-    MockERC20 public diemToken;
+    MockDIEMStaking public diemToken;
     MockERC20 public usdcToken;
 
     address admin = makeAddr("admin");
@@ -23,7 +24,7 @@ contract sDIEMTest is Test {
     uint256 constant REWARD_DUST = 100_000; // 0.1 USDC tolerance
 
     function setUp() public {
-        diemToken = new MockERC20("DIEM", "DIEM", 18);
+        diemToken = new MockDIEMStaking();
         usdcToken = new MockERC20("USDC", "USDC", 6);
 
         staking = new sDIEM(
@@ -386,6 +387,244 @@ contract sDIEMTest is Test {
         staking.setOperator(makeAddr("newOp"));
     }
 
+    // ── Venice forward-staking ──────────────────────────────────────────
+
+    function test_deployToVenice_success() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        // Deploy 90% to Venice, leaving 10% buffer
+        uint256 deployAmount = 90e18;
+        vm.expectEmit(false, false, false, true);
+        emit IsDIEM.DeployedToVenice(deployAmount);
+
+        vm.prank(operator);
+        staking.deployToVenice(deployAmount);
+
+        assertEq(staking.liquidBuffer(), 10e18);
+        assertEq(staking.forwardStaked(), 90e18);
+        assertEq(staking.pendingUnstake(), 0);
+        // totalStaked unchanged
+        assertEq(staking.totalStaked(), DIEM_AMOUNT);
+    }
+
+    function test_deployToVenice_revertsZero() public {
+        vm.prank(operator);
+        vm.expectRevert("sDIEM: zero amount");
+        staking.deployToVenice(0);
+    }
+
+    function test_deployToVenice_revertsNotOperator() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: not operator");
+        staking.deployToVenice(10e18);
+    }
+
+    function test_deployToVenice_revertsInsufficientBuffer() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(operator);
+        vm.expectRevert("sDIEM: insufficient buffer");
+        staking.deployToVenice(DIEM_AMOUNT + 1);
+    }
+
+    function test_deployToVenice_revertsBufferFloor() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        // Buffer floor = 5% of totalStaked = 5e18
+        // Deploying 96e18 would leave only 4e18 buffer (below 5e18 floor)
+        vm.prank(operator);
+        vm.expectRevert("sDIEM: would breach buffer floor");
+        staking.deployToVenice(96e18);
+    }
+
+    function test_deployToVenice_maxDeployRespectsFloor() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        // Max deploy = 100 - 5% = 95e18
+        vm.prank(operator);
+        staking.deployToVenice(95e18);
+
+        assertEq(staking.liquidBuffer(), 5e18);
+        assertEq(staking.forwardStaked(), 95e18);
+    }
+
+    function test_initiateBufferReplenish_success() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(operator);
+        staking.deployToVenice(90e18);
+
+        vm.expectEmit(false, false, false, true);
+        emit IsDIEM.BufferReplenishInitiated(50e18);
+
+        vm.prank(operator);
+        staking.initiateBufferReplenish(50e18);
+
+        assertEq(staking.forwardStaked(), 40e18);
+        assertEq(staking.pendingUnstake(), 50e18);
+    }
+
+    function test_initiateBufferReplenish_revertsZero() public {
+        vm.prank(operator);
+        vm.expectRevert("sDIEM: zero amount");
+        staking.initiateBufferReplenish(0);
+    }
+
+    function test_initiateBufferReplenish_revertsNotOperator() public {
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: not operator");
+        staking.initiateBufferReplenish(10e18);
+    }
+
+    function test_completeBufferReplenish_success() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(operator);
+        staking.deployToVenice(90e18);
+
+        vm.prank(operator);
+        staking.initiateBufferReplenish(50e18);
+
+        // Warp past 24h cooldown
+        vm.warp(block.timestamp + 24 hours);
+
+        vm.prank(operator);
+        staking.completeBufferReplenish();
+
+        // Buffer replenished: 10 + 50 = 60
+        assertEq(staking.liquidBuffer(), 60e18);
+        assertEq(staking.forwardStaked(), 40e18);
+        assertEq(staking.pendingUnstake(), 0);
+    }
+
+    function test_completeBufferReplenish_revertsDuringCooldown() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(operator);
+        staking.deployToVenice(90e18);
+
+        vm.prank(operator);
+        staking.initiateBufferReplenish(50e18);
+
+        // Don't warp — cooldown still active
+        vm.prank(operator);
+        vm.expectRevert("MockDIEM: cooldown active");
+        staking.completeBufferReplenish();
+    }
+
+    function test_completeBufferReplenish_revertsNotOperator() public {
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: not operator");
+        staking.completeBufferReplenish();
+    }
+
+    function test_withdraw_revertsBufferInsufficient() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        // Deploy 90 to Venice, leaving only 10 in buffer
+        vm.prank(operator);
+        staking.deployToVenice(90e18);
+
+        // Alice tries to withdraw 20 but only 10 in buffer
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: buffer insufficient");
+        staking.withdraw(20e18);
+    }
+
+    function test_withdraw_succedsWithinBuffer() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(operator);
+        staking.deployToVenice(90e18);
+
+        // Alice can withdraw up to buffer amount (10)
+        vm.prank(alice);
+        staking.withdraw(10e18);
+
+        assertEq(staking.balanceOf(alice), 90e18);
+        assertEq(staking.totalStaked(), 90e18);
+    }
+
+    function test_views_liquidBuffer_forwardStaked_pendingUnstake() public {
+        // Initial: all zero
+        assertEq(staking.liquidBuffer(), 0);
+        assertEq(staking.forwardStaked(), 0);
+        assertEq(staking.pendingUnstake(), 0);
+
+        // After staking
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+        assertEq(staking.liquidBuffer(), DIEM_AMOUNT);
+
+        // After deploying
+        vm.prank(operator);
+        staking.deployToVenice(80e18);
+        assertEq(staking.liquidBuffer(), 20e18);
+        assertEq(staking.forwardStaked(), 80e18);
+
+        // After initiating replenish
+        vm.prank(operator);
+        staking.initiateBufferReplenish(30e18);
+        assertEq(staking.forwardStaked(), 50e18);
+        assertEq(staking.pendingUnstake(), 30e18);
+
+        // After completing replenish
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(operator);
+        staking.completeBufferReplenish();
+        assertEq(staking.liquidBuffer(), 50e18);
+        assertEq(staking.forwardStaked(), 50e18);
+        assertEq(staking.pendingUnstake(), 0);
+    }
+
+    function test_fullVeniceFlow() public {
+        // 1. Alice stakes
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        // 2. Operator deploys to Venice
+        vm.prank(operator);
+        staking.deployToVenice(90e18);
+
+        // 3. Seed rewards while staked on Venice
+        _seedRewards(REWARD_AMOUNT);
+        vm.warp(block.timestamp + 12 hours);
+
+        // 4. Operator initiates buffer replenish
+        vm.prank(operator);
+        staking.initiateBufferReplenish(90e18);
+
+        // 5. Wait for cooldown
+        vm.warp(block.timestamp + 24 hours);
+
+        // 6. Complete replenish
+        vm.prank(operator);
+        staking.completeBufferReplenish();
+
+        // 7. Alice exits with all funds + rewards
+        uint256 diemBefore = diemToken.balanceOf(alice);
+        uint256 usdcBefore = usdcToken.balanceOf(alice);
+
+        vm.prank(alice);
+        staking.exit();
+
+        assertEq(diemToken.balanceOf(alice), diemBefore + DIEM_AMOUNT);
+        assertGt(usdcToken.balanceOf(alice), usdcBefore); // earned some USDC
+        assertEq(staking.totalStaked(), 0);
+    }
+
     // ── Fuzz tests ──────────────────────────────────────────────────────
 
     function testFuzz_stakeWithdraw(uint256 stakeAmount) public {
@@ -456,5 +695,26 @@ contract sDIEMTest is Test {
             uint256 tolerance = (lhs > rhs ? lhs : rhs) / 1000;
             assertApproxEqAbs(lhs, rhs, tolerance + 1);
         }
+    }
+
+    function testFuzz_deployToVenice(uint256 stakeAmount, uint256 deployAmount) public {
+        stakeAmount = bound(stakeAmount, 10e18, 1000e18);
+
+        vm.prank(alice);
+        staking.stake(stakeAmount);
+
+        // Max deployable respecting 5% buffer floor
+        uint256 floor = (stakeAmount * 500) / 10000;
+        uint256 maxDeploy = stakeAmount - floor;
+        deployAmount = bound(deployAmount, 1, maxDeploy);
+
+        vm.prank(operator);
+        staking.deployToVenice(deployAmount);
+
+        // Conservation: liquidBuffer + forwardStaked == totalStaked
+        assertEq(
+            staking.liquidBuffer() + staking.forwardStaked(),
+            staking.totalStaked()
+        );
     }
 }
