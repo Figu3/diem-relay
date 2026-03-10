@@ -115,8 +115,4 @@ contract DIEMVaultInvariantTest is Test {
         );
     }
 
-    /// @notice Invariant: protocolFees is always 0 in Phase 1 (no fee accrual mechanism)
-    function invariant_protocolFeesZeroInPhaseOne() public view {
-        assertEq(vault.protocolFees(), 0, "Protocol fees should be 0 in Phase 1");
-    }
 }

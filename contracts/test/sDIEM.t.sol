@@ -53,13 +53,16 @@ contract sDIEMTest is Test {
         staking.notifyRewardAmount(amount);
     }
 
-    /// @dev Stake, request, warp 24h, claim from Venice, complete — full async flow.
+    /// @dev Stake, request, initiate Venice unstake, warp 24h, claim from Venice, complete — full async flow.
     function _stakeAndWithdraw(address user, uint256 stakeAmount, uint256 withdrawAmount) internal {
         vm.prank(user);
         staking.stake(stakeAmount);
 
         vm.prank(user);
         staking.requestWithdraw(withdrawAmount);
+
+        // Initiate Venice unstake (permissionless, batches pending)
+        staking.initiateVeniceUnstake();
 
         vm.warp(block.timestamp + 24 hours);
 
@@ -239,6 +242,9 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
 
+        // requestWithdraw no longer calls initiateUnstake directly — must call separately
+        staking.initiateVeniceUnstake();
+
         // Venice should have pending unstake
         (uint256 staked,, uint256 pending) = diemToken.stakedInfos(address(staking));
         assertEq(staked, 0);
@@ -253,6 +259,9 @@ contract sDIEMTest is Test {
 
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
+
+        // Initiate Venice unstake (decoupled from requestWithdraw)
+        staking.initiateVeniceUnstake();
 
         // Warp past 24h delay
         vm.warp(block.timestamp + 24 hours);
@@ -278,6 +287,7 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
 
+        staking.initiateVeniceUnstake();
         vm.warp(block.timestamp + 24 hours);
         staking.claimFromVenice();
 
@@ -316,9 +326,10 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
 
+        staking.initiateVeniceUnstake();
         vm.warp(block.timestamp + 24 hours);
 
-        // Don't call claimFromVenice — no liquid DIEM
+        // Don't call claimFromVenice — DIEM in cooldown but not claimed
         vm.prank(alice);
         vm.expectRevert("sDIEM: claim from Venice first");
         staking.completeWithdraw();
@@ -476,9 +487,10 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
-        // Request withdraw to trigger initiateUnstake
+        // Request withdraw then initiate Venice unstake (decoupled)
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
+        staking.initiateVeniceUnstake();
 
         // Warp past cooldown
         vm.warp(block.timestamp + 24 hours);
@@ -535,6 +547,7 @@ contract sDIEMTest is Test {
         // Alice requests withdraw — starts pending
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
+        staking.initiateVeniceUnstake();
 
         // Warp, claim from Venice — liquid = 100 (all pending returned)
         vm.warp(block.timestamp + 24 hours);
@@ -583,6 +596,7 @@ contract sDIEMTest is Test {
 
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
+        staking.initiateVeniceUnstake();
 
         // Cooldown should be block.timestamp + 24h
         assertEq(staking.veniceCooldownEnd(), block.timestamp + 24 hours);
@@ -763,6 +777,7 @@ contract sDIEMTest is Test {
         // 3. Alice requests full withdrawal
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
+        staking.initiateVeniceUnstake();
 
         // 4. Wait for delay + cooldown
         vm.warp(block.timestamp + 24 hours);
@@ -798,6 +813,7 @@ contract sDIEMTest is Test {
         staking.requestWithdraw(DIEM_AMOUNT);
         vm.prank(bob);
         staking.requestWithdraw(DIEM_AMOUNT);
+        staking.initiateVeniceUnstake();
 
         assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT * 2);
 
@@ -829,6 +845,7 @@ contract sDIEMTest is Test {
 
         vm.prank(alice);
         staking.requestWithdraw(stakeAmount);
+        staking.initiateVeniceUnstake();
 
         assertEq(staking.balanceOf(alice), 0);
         assertEq(staking.totalStaked(), 0);

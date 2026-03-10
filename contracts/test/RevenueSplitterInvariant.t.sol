@@ -9,7 +9,7 @@ import {csDIEM} from "../src/csDIEM.sol";
 import {MockDIEMStaking} from "./mocks/MockDIEMStaking.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
-import {MockAerodromePool} from "./mocks/MockAerodromePool.sol";
+import {MockCLPool} from "./mocks/MockCLPool.sol";
 
 /**
  * @title RevenueSplitterHandler
@@ -145,7 +145,7 @@ contract RevenueSplitterInvariantTest is Test {
     MockDIEMStaking public diemToken;
     MockERC20 public usdcToken;
     MockSwapRouter public router;
-    MockAerodromePool public oraclePool;
+    MockCLPool public oraclePool;
     RevenueSplitterHandler public handler;
 
     address admin = makeAddr("admin");
@@ -155,15 +155,22 @@ contract RevenueSplitterInvariantTest is Test {
     uint256 constant INITIAL_SDIEM_BPS = 5000;
     uint256 constant MIN_DISTRIBUTION = 100e6;
     uint256 constant MAX_SLIPPAGE = 100;
-    address constant AERO_FACTORY = address(0xAE40);
-    uint256 constant TWAP_GRANULARITY = 4;
+    uint32 constant TWAP_WINDOW = 1800;
+    int24 constant TICK_SPACING = 1;
 
     function setUp() public {
         // Deploy mocks
         diemToken = new MockDIEMStaking();
         usdcToken = new MockERC20("USDC", "USDC", 6);
         router = new MockSwapRouter(address(diemToken));
-        oraclePool = new MockAerodromePool();
+        oraclePool = new MockCLPool();
+
+        // Set oracle tick based on token address ordering.
+        // tick 276324 → 1 USDC ≈ 1 DIEM (accounting for 6→18 decimal diff).
+        // Sign flips if USDC address > DIEM address.
+        if (address(usdcToken) > address(diemToken)) {
+            oraclePool.setMeanTick(-276324);
+        }
 
         // Deploy staking contracts
         sdiem = new sDIEM(address(diemToken), address(usdcToken), admin, operator);
@@ -177,12 +184,12 @@ contract RevenueSplitterInvariantTest is Test {
             address(csdiem),
             address(router),
             address(oraclePool),
-            AERO_FACTORY,
             admin,
             INITIAL_SDIEM_BPS,
             MIN_DISTRIBUTION,
             MAX_SLIPPAGE,
-            TWAP_GRANULARITY
+            TWAP_WINDOW,
+            TICK_SPACING
         );
 
         // Set splitter as operator on sDIEM

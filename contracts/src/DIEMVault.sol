@@ -31,6 +31,8 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
 
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint256 public constant DEFAULT_MIN_DEPOSIT = 10e6; // 10 USDC (6 decimals)
+    uint256 public constant DEFAULT_FEE_BPS = 2000;     // 20% fee
+    uint256 public constant MAX_FEE_BPS = 5000;          // 50% hard cap
 
     // ── Immutables ──────────────────────────────────────────────────────
 
@@ -41,6 +43,7 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
     address public override admin;
     bool public override paused;
     uint256 public override minDeposit;
+    uint256 public override feeBps;
     uint256 public override totalDeposits;
     uint256 public override protocolFees;
     mapping(address => uint256) public override borrowerBalance;
@@ -66,6 +69,7 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
         depositToken = IERC20(_depositToken);
         admin = _admin;
         minDeposit = DEFAULT_MIN_DEPOSIT;
+        feeBps = DEFAULT_FEE_BPS;
     }
 
     // ── Deposit ─────────────────────────────────────────────────────────
@@ -78,14 +82,19 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
     function deposit(uint256 amount) external override nonReentrant whenNotPaused {
         require(amount >= minDeposit, "DIEMVault: below min deposit");
 
+        // Calculate fee
+        uint256 fee = (amount * feeBps) / BPS_DENOMINATOR;
+        uint256 netDeposit = amount - fee;
+
         // Effects
-        borrowerBalance[msg.sender] += amount;
-        totalDeposits += amount;
+        borrowerBalance[msg.sender] += netDeposit;
+        totalDeposits += netDeposit;
+        protocolFees += fee;
 
         // Interaction
         depositToken.safeTransferFrom(msg.sender, address(this), amount);
 
-        emit Deposited(msg.sender, amount, borrowerBalance[msg.sender]);
+        emit Deposited(msg.sender, netDeposit, fee, borrowerBalance[msg.sender]);
     }
 
     // ── Protocol fee withdrawal ─────────────────────────────────────────
@@ -127,6 +136,15 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
         uint256 oldMin = minDeposit;
         minDeposit = newMin;
         emit MinDepositChanged(oldMin, newMin);
+    }
+
+    /// @notice Update the protocol fee in basis points.
+    /// @param newFeeBps New fee (e.g. 2000 = 20%). Capped at MAX_FEE_BPS.
+    function setFeeBps(uint256 newFeeBps) external override onlyAdmin {
+        require(newFeeBps <= MAX_FEE_BPS, "DIEMVault: fee exceeds max");
+        uint256 oldBps = feeBps;
+        feeBps = newFeeBps;
+        emit FeeBpsChanged(oldBps, newFeeBps);
     }
 
     /// @notice Transfer admin role to a new address.

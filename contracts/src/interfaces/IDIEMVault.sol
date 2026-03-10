@@ -15,10 +15,11 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 interface IDIEMVault {
     // ── Events ──────────────────────────────────────────────────────────
 
-    event Deposited(address indexed borrower, uint256 amount, uint256 newBalance);
+    event Deposited(address indexed borrower, uint256 amount, uint256 fee, uint256 newBalance);
     event ProtocolFeesWithdrawn(address indexed to, uint256 amount);
     event AdminChanged(address indexed oldAdmin, address indexed newAdmin);
     event MinDepositChanged(uint256 oldMin, uint256 newMin);
+    event FeeBpsChanged(uint256 oldBps, uint256 newBps);
     event Paused(address indexed by);
     event Unpaused(address indexed by);
 
@@ -28,6 +29,7 @@ interface IDIEMVault {
     function admin() external view returns (address);
     function paused() external view returns (bool);
     function minDeposit() external view returns (uint256);
+    function feeBps() external view returns (uint256);
     function totalDeposits() external view returns (uint256);
     function protocolFees() external view returns (uint256);
     function borrowerBalance(address borrower) external view returns (uint256);
@@ -42,5 +44,6 @@ interface IDIEMVault {
     function pause() external;
     function unpause() external;
     function setMinDeposit(uint256 newMin) external;
+    function setFeeBps(uint256 newFeeBps) external;
     function setAdmin(address newAdmin) external;
 }

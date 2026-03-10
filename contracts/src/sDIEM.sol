@@ -64,6 +64,7 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
     // ── State — withdrawals ─────────────────────────────────────────────
 
     uint256 public override totalPendingWithdrawals;
+    uint256 public override totalPendingNotInitiated;
     mapping(address => WithdrawalRequest) private _withdrawalRequests;
 
     // ── State — rewards ─────────────────────────────────────────────────
@@ -218,10 +219,8 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         req.amount += amount;
         req.requestedAt = block.timestamp;
         totalPendingWithdrawals += amount;
+        totalPendingNotInitiated += amount;
         emit WithdrawalRequested(msg.sender, amount);
-
-        // Interaction — initiate Venice unstake (starts/resets cooldown)
-        diemStaking.initiateUnstake(amount);
     }
 
     /**
@@ -295,10 +294,8 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
             req.amount += bal;
             req.requestedAt = block.timestamp;
             totalPendingWithdrawals += bal;
+            totalPendingNotInitiated += bal;
             emit WithdrawalRequested(msg.sender, bal);
-
-            // Interaction — initiate Venice unstake
-            diemStaking.initiateUnstake(bal);
         }
         _claimReward(msg.sender);
     }
@@ -333,6 +330,24 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
 
         // Interaction
         diemStaking.unstake();
+    }
+
+    /**
+     * @notice Batch-send accumulated withdrawal amounts to Venice. Anyone can call.
+     * @dev Calls diemStaking.initiateUnstake() once for all pending amounts
+     *      that haven't been sent yet. Minimizes cooldown resets compared to
+     *      calling initiateUnstake() on every individual withdrawal request.
+     */
+    function initiateVeniceUnstake() external override nonReentrant {
+        uint256 amount = totalPendingNotInitiated;
+        require(amount > 0, "sDIEM: nothing to initiate");
+
+        // Effects
+        totalPendingNotInitiated = 0;
+        emit VeniceUnstakeInitiated(msg.sender, amount);
+
+        // Interaction
+        diemStaking.initiateUnstake(amount);
     }
 
     /**

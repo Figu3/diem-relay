@@ -10,7 +10,7 @@ import {csDIEM} from "../src/csDIEM.sol";
 import {MockDIEMStaking} from "./mocks/MockDIEMStaking.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockSwapRouter} from "./mocks/MockSwapRouter.sol";
-import {MockAerodromePool} from "./mocks/MockAerodromePool.sol";
+import {MockCLPool} from "./mocks/MockCLPool.sol";
 
 contract RevenueSplitterTest is Test {
     RevenueSplitter public splitter;
@@ -19,7 +19,7 @@ contract RevenueSplitterTest is Test {
     MockDIEMStaking public diemToken;
     MockERC20 public usdcToken;
     MockSwapRouter public router;
-    MockAerodromePool public oraclePool;
+    MockCLPool public oraclePool;
 
     address admin = makeAddr("admin");
     address operator = makeAddr("operator");
@@ -29,15 +29,22 @@ contract RevenueSplitterTest is Test {
     uint256 constant INITIAL_SDIEM_BPS = 5000; // 50/50 split
     uint256 constant MIN_DISTRIBUTION = 100e6; // 100 USDC
     uint256 constant MAX_SLIPPAGE = 100; // 1%
-    address constant AERO_FACTORY = address(0xAE40);
-    uint256 constant TWAP_GRANULARITY = 4;
+    uint32 constant TWAP_WINDOW = 1800; // 30-minute TWAP
+    int24 constant TICK_SPACING = 1;
 
     function setUp() public {
         // Deploy mocks
         diemToken = new MockDIEMStaking();
         usdcToken = new MockERC20("USDC", "USDC", 6);
         router = new MockSwapRouter(address(diemToken));
-        oraclePool = new MockAerodromePool();
+        oraclePool = new MockCLPool();
+
+        // Set oracle tick based on token address ordering.
+        // tick 276324 → 1 USDC ≈ 1 DIEM (accounting for 6→18 decimal diff).
+        // Sign flips if USDC address > DIEM address.
+        if (address(usdcToken) > address(diemToken)) {
+            oraclePool.setMeanTick(-276324);
+        }
 
         // Deploy staking contracts
         sdiem = new sDIEM(address(diemToken), address(usdcToken), admin, operator);
@@ -51,12 +58,12 @@ contract RevenueSplitterTest is Test {
             address(csdiem),
             address(router),
             address(oraclePool),
-            AERO_FACTORY,
             admin,
             INITIAL_SDIEM_BPS,
             MIN_DISTRIBUTION,
             MAX_SLIPPAGE,
-            TWAP_GRANULARITY
+            TWAP_WINDOW,
+            TICK_SPACING
         );
 
         // Set splitter as operator on sDIEM so it can call notifyRewardAmount
@@ -85,8 +92,8 @@ contract RevenueSplitterTest is Test {
         assertEq(address(splitter.csdiem()), address(csdiem));
         assertEq(splitter.swapRouter(), address(router));
         assertEq(splitter.oraclePool(), address(oraclePool));
-        assertEq(splitter.aeroFactory(), AERO_FACTORY);
-        assertEq(splitter.twapGranularity(), TWAP_GRANULARITY);
+        assertEq(splitter.twapWindow(), TWAP_WINDOW);
+        assertEq(splitter.tickSpacing(), TICK_SPACING);
         assertEq(splitter.admin(), admin);
         assertEq(splitter.sdiemBps(), INITIAL_SDIEM_BPS);
         assertEq(splitter.minDistribution(), MIN_DISTRIBUTION);
@@ -95,43 +102,45 @@ contract RevenueSplitterTest is Test {
 
     function test_constructor_revertsOnZeroAddresses() public {
         vm.expectRevert("RevenueSplitter: zero usdc");
-        new RevenueSplitter(address(0), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), AERO_FACTORY, admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_GRANULARITY);
+        new RevenueSplitter(address(0), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_WINDOW, TICK_SPACING);
 
         vm.expectRevert("RevenueSplitter: zero diem");
-        new RevenueSplitter(address(usdcToken), address(0), address(sdiem), address(csdiem), address(router), address(oraclePool), AERO_FACTORY, admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_GRANULARITY);
+        new RevenueSplitter(address(usdcToken), address(0), address(sdiem), address(csdiem), address(router), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_WINDOW, TICK_SPACING);
 
         vm.expectRevert("RevenueSplitter: zero sdiem");
-        new RevenueSplitter(address(usdcToken), address(diemToken), address(0), address(csdiem), address(router), address(oraclePool), AERO_FACTORY, admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_GRANULARITY);
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(0), address(csdiem), address(router), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_WINDOW, TICK_SPACING);
 
         vm.expectRevert("RevenueSplitter: zero csdiem");
-        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(0), address(router), address(oraclePool), AERO_FACTORY, admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_GRANULARITY);
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(0), address(router), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_WINDOW, TICK_SPACING);
 
         vm.expectRevert("RevenueSplitter: zero router");
-        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(0), address(oraclePool), AERO_FACTORY, admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_GRANULARITY);
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(0), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_WINDOW, TICK_SPACING);
 
         vm.expectRevert("RevenueSplitter: zero oracle pool");
-        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(0), AERO_FACTORY, admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_GRANULARITY);
-
-        vm.expectRevert("RevenueSplitter: zero factory");
-        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), address(0), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_GRANULARITY);
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(0), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_WINDOW, TICK_SPACING);
 
         vm.expectRevert("RevenueSplitter: zero admin");
-        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), AERO_FACTORY, address(0), 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_GRANULARITY);
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), address(0), 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_WINDOW, TICK_SPACING);
     }
 
-    function test_constructor_revertsOnZeroGranularity() public {
-        vm.expectRevert("RevenueSplitter: zero granularity");
-        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), AERO_FACTORY, admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, 0);
+    function test_constructor_revertsOnZeroTwapWindow() public {
+        vm.expectRevert("RevenueSplitter: zero twap window");
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, 0, TICK_SPACING);
+    }
+
+    function test_constructor_revertsOnZeroTickSpacing() public {
+        vm.expectRevert("RevenueSplitter: zero tick spacing");
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_WINDOW, 0);
     }
 
     function test_constructor_revertsOnInvalidBps() public {
         vm.expectRevert("RevenueSplitter: bps > 10000");
-        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), AERO_FACTORY, admin, 10001, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_GRANULARITY);
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), admin, 10001, MIN_DISTRIBUTION, MAX_SLIPPAGE, TWAP_WINDOW, TICK_SPACING);
     }
 
     function test_constructor_revertsOnExcessiveSlippage() public {
         vm.expectRevert("RevenueSplitter: slippage > 10%");
-        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), AERO_FACTORY, admin, 5000, MIN_DISTRIBUTION, 1001, TWAP_GRANULARITY);
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, 1001, TWAP_WINDOW, TICK_SPACING);
     }
 
     // ── Distribute tests ────────────────────────────────────────────────
@@ -254,9 +263,16 @@ contract RevenueSplitterTest is Test {
     }
 
     function test_distribute_withDifferentExchangeRate() public {
-        // 1 USDC = 0.5 DIEM (DIEM is more expensive)
-        router.setExchangeRate(0.5e18);
-        oraclePool.setTwapRate(0.5e18);
+        // 1 USDC = 2 DIEM (DIEM is cheaper)
+        router.setExchangeRate(2e18);
+
+        // Set oracle tick to match the 2:1 rate.
+        // tick ≈ 283255 for price = 2e12 raw (usdc < diem).
+        // Sign flips if USDC address > DIEM address.
+        int24 newTick = address(usdcToken) < address(diemToken)
+            ? int24(283255)
+            : int24(-283255);
+        oraclePool.setMeanTick(newTick);
 
         uint256 amount = 1000e6;
         usdcToken.mint(address(splitter), amount);
@@ -338,16 +354,28 @@ contract RevenueSplitterTest is Test {
         splitter.setOraclePool(address(0));
     }
 
-    function test_setTwapGranularity() public {
+    function test_setTwapWindow() public {
         vm.prank(admin);
-        splitter.setTwapGranularity(8);
-        assertEq(splitter.twapGranularity(), 8);
+        splitter.setTwapWindow(3600);
+        assertEq(splitter.twapWindow(), 3600);
     }
 
-    function test_setTwapGranularity_revertsZero() public {
+    function test_setTwapWindow_revertsZero() public {
         vm.prank(admin);
-        vm.expectRevert("RevenueSplitter: zero granularity");
-        splitter.setTwapGranularity(0);
+        vm.expectRevert("RevenueSplitter: zero twap window");
+        splitter.setTwapWindow(0);
+    }
+
+    function test_setTickSpacing() public {
+        vm.prank(admin);
+        splitter.setTickSpacing(100);
+        assertEq(splitter.tickSpacing(), 100);
+    }
+
+    function test_setTickSpacing_revertsZero() public {
+        vm.prank(admin);
+        vm.expectRevert("RevenueSplitter: zero tick spacing");
+        splitter.setTickSpacing(0);
     }
 
     function test_pause_unpause() public {

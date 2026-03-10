@@ -7,8 +7,9 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IRevenueSplitter} from "./interfaces/IRevenueSplitter.sol";
 import {IsDIEM} from "./interfaces/IsDIEM.sol";
 import {IcsDIEM} from "./interfaces/IcsDIEM.sol";
-import {IAerodromePool} from "./interfaces/IAerodromePool.sol";
-import {IAerodromeRouter} from "./interfaces/IAerodromeRouter.sol";
+import {ICLPool} from "./interfaces/ICLPool.sol";
+import {ICLSwapRouter} from "./interfaces/ICLSwapRouter.sol";
+import {OracleLibrary} from "./libraries/OracleLibrary.sol";
 
 /**
  * @title RevenueSplitter
@@ -16,16 +17,16 @@ import {IAerodromeRouter} from "./interfaces/IAerodromeRouter.sol";
  *
  * Receives USDC revenue (from Venice compute credit earnings) and splits it:
  *   - sDIEM portion: USDC transferred + notifyRewardAmount() called
- *   - csDIEM portion: USDC swapped → DIEM via Aerodrome, then donated to csDIEM
+ *   - csDIEM portion: USDC swapped → DIEM via Aerodrome Slipstream (CL), then donated to csDIEM
  *
  * `distribute()` is fully permissionless — anyone can trigger it when
  * the contract holds USDC above the minimum threshold. This removes
  * the need for a centralized operator to manage revenue distribution.
  *
  * Anti-sandwich protection:
- *   Uses Aerodrome's on-chain TWAP oracle to compute a fair price floor.
- *   `amountOutMin = twapQuote * (1 - maxSlippageBps / 10000)`
- *   Default twapGranularity=4 with 1800s periodSize ≈ 2-hour TWAP window.
+ *   Uses Slipstream CL pool's on-chain TWAP oracle (observe()) to compute a fair
+ *   price floor. `amountOutMin = twapQuote * (1 - maxSlippageBps / 10000)`
+ *   Default twapWindow = 1800 seconds (30-minute TWAP).
  *
  * Security features:
  *   - Two-step admin transfer
@@ -49,9 +50,6 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     IsDIEM public immutable sdiem;
     IcsDIEM public immutable csdiem;
 
-    /// @notice Aerodrome factory for constructing swap routes.
-    address public immutable override aeroFactory;
-
     // ── State — roles ───────────────────────────────────────────────────
 
     address public override admin;
@@ -69,15 +67,18 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     /// @notice Maximum slippage for USDC→DIEM swap (in bps).
     uint256 public override maxSlippageBps;
 
-    /// @notice Aerodrome router for USDC→DIEM swaps.
+    /// @notice Slipstream CL swap router for USDC→DIEM swaps.
     address public override swapRouter;
 
-    /// @notice Aerodrome pool used for TWAP oracle queries.
+    /// @notice Slipstream CL pool used for TWAP oracle queries.
     address public override oraclePool;
 
-    /// @notice Number of observation periods for TWAP.
-    /// Default 4 with 1800s periodSize ≈ 2-hour window.
-    uint256 public override twapGranularity;
+    /// @notice TWAP window in seconds for CL oracle queries.
+    /// Default 1800 = 30-minute TWAP.
+    uint32 public override twapWindow;
+
+    /// @notice Tick spacing of the DIEM/USDC CL pool.
+    int24 public override tickSpacing;
 
     // ── Modifiers ───────────────────────────────────────────────────────
 
@@ -100,12 +101,12 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         address _csdiem,
         address _swapRouter,
         address _oraclePool,
-        address _aeroFactory,
         address _admin,
         uint256 _sdiemBps,
         uint256 _minDistribution,
         uint256 _maxSlippageBps,
-        uint256 _twapGranularity
+        uint32 _twapWindow,
+        int24 _tickSpacing
     ) {
         require(_usdc != address(0), "RevenueSplitter: zero usdc");
         require(_diem != address(0), "RevenueSplitter: zero diem");
@@ -113,11 +114,11 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         require(_csdiem != address(0), "RevenueSplitter: zero csdiem");
         require(_swapRouter != address(0), "RevenueSplitter: zero router");
         require(_oraclePool != address(0), "RevenueSplitter: zero oracle pool");
-        require(_aeroFactory != address(0), "RevenueSplitter: zero factory");
         require(_admin != address(0), "RevenueSplitter: zero admin");
         require(_sdiemBps <= BPS_DENOMINATOR, "RevenueSplitter: bps > 10000");
         require(_maxSlippageBps <= 1000, "RevenueSplitter: slippage > 10%");
-        require(_twapGranularity > 0, "RevenueSplitter: zero granularity");
+        require(_twapWindow > 0, "RevenueSplitter: zero twap window");
+        require(_tickSpacing > 0, "RevenueSplitter: zero tick spacing");
 
         usdc = IERC20(_usdc);
         diem = IERC20(_diem);
@@ -125,12 +126,12 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         csdiem = IcsDIEM(_csdiem);
         swapRouter = _swapRouter;
         oraclePool = _oraclePool;
-        aeroFactory = _aeroFactory;
         admin = _admin;
         sdiemBps = _sdiemBps;
         minDistribution = _minDistribution;
         maxSlippageBps = _maxSlippageBps;
-        twapGranularity = _twapGranularity;
+        twapWindow = _twapWindow;
+        tickSpacing = _tickSpacing;
     }
 
     // ── Views ───────────────────────────────────────────────────────────
@@ -187,9 +188,13 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     }
 
     function _swapUsdcToDiem(uint256 usdcAmount) internal returns (uint256) {
-        // 1. Query TWAP oracle for fair price
-        uint256 twapOut = IAerodromePool(oraclePool).quote(
-            address(usdc), usdcAmount, twapGranularity
+        // 1. Query CL TWAP oracle for fair price
+        int24 arithmeticMeanTick = OracleLibrary.consult(oraclePool, twapWindow);
+        uint256 twapOut = OracleLibrary.getQuoteAtTick(
+            arithmeticMeanTick,
+            uint128(usdcAmount),
+            address(usdc),
+            address(diem)
         );
 
         // 2. Apply slippage tolerance: amountOutMin = twapOut * (1 - maxSlippageBps / 10000)
@@ -198,28 +203,21 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         // 3. Approve router to spend USDC
         usdc.safeIncreaseAllowance(swapRouter, usdcAmount);
 
-        // 4. Build single-hop route: USDC → DIEM (volatile pair)
-        IAerodromeRouter.Route[] memory routes = new IAerodromeRouter.Route[](1);
-        routes[0] = IAerodromeRouter.Route({
-            from: address(usdc),
-            to: address(diem),
-            stable: false,
-            factory: aeroFactory
-        });
-
-        // 5. Execute swap with TWAP-derived minimum output
-        uint256[] memory amounts = IAerodromeRouter(swapRouter).swapExactTokensForTokens(
-            usdcAmount,
-            amountOutMin,
-            routes,
-            address(this),
-            block.timestamp
+        // 4. Execute swap via Slipstream exactInputSingle
+        uint256 amountOut = ICLSwapRouter(swapRouter).exactInputSingle(
+            ICLSwapRouter.ExactInputSingleParams({
+                tokenIn: address(usdc),
+                tokenOut: address(diem),
+                tickSpacing: tickSpacing,
+                recipient: address(this),
+                deadline: block.timestamp,
+                amountIn: usdcAmount,
+                amountOutMinimum: amountOutMin,
+                sqrtPriceLimitX96: 0
+            })
         );
 
-        // amounts[0] = input, amounts[1] = output for single-hop
-        uint256 amountOut = amounts[amounts.length - 1];
         require(amountOut > 0, "RevenueSplitter: swap returned zero");
-
         return amountOut;
     }
 
@@ -265,11 +263,19 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     }
 
     /// @inheritdoc IRevenueSplitter
-    function setTwapGranularity(uint256 newGranularity) external override onlyAdmin {
-        require(newGranularity > 0, "RevenueSplitter: zero granularity");
-        uint256 old = twapGranularity;
-        twapGranularity = newGranularity;
-        emit TwapGranularityUpdated(old, newGranularity);
+    function setTwapWindow(uint32 newWindow) external override onlyAdmin {
+        require(newWindow > 0, "RevenueSplitter: zero twap window");
+        uint32 old = twapWindow;
+        twapWindow = newWindow;
+        emit TwapWindowUpdated(old, newWindow);
+    }
+
+    /// @inheritdoc IRevenueSplitter
+    function setTickSpacing(int24 newSpacing) external override onlyAdmin {
+        require(newSpacing > 0, "RevenueSplitter: zero tick spacing");
+        int24 old = tickSpacing;
+        tickSpacing = newSpacing;
+        emit TickSpacingUpdated(old, newSpacing);
     }
 
     /// @inheritdoc IRevenueSplitter

@@ -16,6 +16,8 @@ contract DIEMVaultTest is Test {
 
     uint256 public constant MIN_DEPOSIT = 10e6; // 10 USDC
     uint256 public constant INITIAL_BALANCE = 100_000e6; // 100k USDC
+    uint256 public constant DEFAULT_FEE_BPS = 2000; // 20%
+    uint256 public constant BPS_DENOMINATOR = 10_000;
 
     function setUp() public {
         usdc = new MockERC20("USD Coin", "USDC", 6);
@@ -32,12 +34,42 @@ contract DIEMVaultTest is Test {
         usdc.approve(address(vault), type(uint256).max);
     }
 
+    // ── Helpers ──────────────────────────────────────────────────────────
+
+    /// @dev Compute net deposit after 20% fee.
+    function _netOf(uint256 amount) internal pure returns (uint256) {
+        uint256 fee = (amount * DEFAULT_FEE_BPS) / BPS_DENOMINATOR;
+        return amount - fee;
+    }
+
+    /// @dev Compute fee for a given amount.
+    function _feeOf(uint256 amount) internal pure returns (uint256) {
+        return (amount * DEFAULT_FEE_BPS) / BPS_DENOMINATOR;
+    }
+
+    /**
+     * @dev Directly set `protocolFees` storage slot for testing fee
+     *      withdrawal.
+     *
+     *      Storage layout of DIEMVault (OZ v5 ReentrancyGuard uses transient storage):
+     *        slot 0: admin (address, 20 bytes) + paused (bool, 1 byte) — packed
+     *        slot 1: minDeposit (uint256)
+     *        slot 2: feeBps (uint256)
+     *        slot 3: totalDeposits (uint256)
+     *        slot 4: protocolFees (uint256)
+     *        slot 5: borrowerBalance mapping
+     */
+    function _setProtocolFees(uint256 amount) internal {
+        vm.store(address(vault), bytes32(uint256(4)), bytes32(amount));
+    }
+
     // ── Constructor ─────────────────────────────────────────────────────
 
     function test_constructor_setsImmutables() public view {
         assertEq(address(vault.depositToken()), address(usdc));
         assertEq(vault.admin(), admin);
         assertEq(vault.minDeposit(), MIN_DEPOSIT);
+        assertEq(vault.feeBps(), DEFAULT_FEE_BPS);
         assertFalse(vault.paused());
         assertEq(vault.totalDeposits(), 0);
         assertEq(vault.protocolFees(), 0);
@@ -57,13 +89,16 @@ contract DIEMVaultTest is Test {
 
     function test_deposit_basic() public {
         uint256 amount = 50e6; // 50 USDC
+        uint256 net = _netOf(amount); // 40 USDC
+        uint256 fee = _feeOf(amount); // 10 USDC
 
         vm.prank(alice);
         vault.deposit(amount);
 
-        assertEq(vault.borrowerBalance(alice), amount);
-        assertEq(vault.totalDeposits(), amount);
-        assertEq(usdc.balanceOf(address(vault)), amount);
+        assertEq(vault.borrowerBalance(alice), net);
+        assertEq(vault.totalDeposits(), net);
+        assertEq(vault.protocolFees(), fee);
+        assertEq(usdc.balanceOf(address(vault)), amount); // full amount transferred
         assertEq(usdc.balanceOf(alice), INITIAL_BALANCE - amount);
     }
 
@@ -74,8 +109,9 @@ contract DIEMVaultTest is Test {
         vm.prank(alice);
         vault.deposit(30e6);
 
-        assertEq(vault.borrowerBalance(alice), 50e6);
-        assertEq(vault.totalDeposits(), 50e6);
+        assertEq(vault.borrowerBalance(alice), _netOf(20e6) + _netOf(30e6));
+        assertEq(vault.totalDeposits(), _netOf(20e6) + _netOf(30e6));
+        assertEq(vault.protocolFees(), _feeOf(20e6) + _feeOf(30e6));
     }
 
     function test_deposit_multipleDepositors() public {
@@ -85,17 +121,20 @@ contract DIEMVaultTest is Test {
         vm.prank(bob);
         vault.deposit(200e6);
 
-        assertEq(vault.borrowerBalance(alice), 100e6);
-        assertEq(vault.borrowerBalance(bob), 200e6);
-        assertEq(vault.totalDeposits(), 300e6);
-        assertEq(usdc.balanceOf(address(vault)), 300e6);
+        assertEq(vault.borrowerBalance(alice), _netOf(100e6));
+        assertEq(vault.borrowerBalance(bob), _netOf(200e6));
+        assertEq(vault.totalDeposits(), _netOf(100e6) + _netOf(200e6));
+        assertEq(vault.protocolFees(), _feeOf(100e6) + _feeOf(200e6));
+        assertEq(usdc.balanceOf(address(vault)), 300e6); // full amounts transferred
     }
 
     function test_deposit_emitsEvent() public {
         uint256 amount = 50e6;
+        uint256 net = _netOf(amount);
+        uint256 fee = _feeOf(amount);
 
         vm.expectEmit(true, false, false, true);
-        emit IDIEMVault.Deposited(alice, amount, amount);
+        emit IDIEMVault.Deposited(alice, net, fee, net);
 
         vm.prank(alice);
         vault.deposit(amount);
@@ -149,25 +188,108 @@ contract DIEMVaultTest is Test {
         vm.prank(alice);
         vault.deposit(MIN_DEPOSIT);
 
-        assertEq(vault.borrowerBalance(alice), MIN_DEPOSIT);
-        assertEq(vault.totalDeposits(), MIN_DEPOSIT);
+        assertEq(vault.borrowerBalance(alice), _netOf(MIN_DEPOSIT));
+        assertEq(vault.totalDeposits(), _netOf(MIN_DEPOSIT));
+    }
+
+    // ── Fee mechanism ─────────────────────────────────────────────────
+
+    function test_deposit_feeAccrual() public {
+        uint256 amount = 100e6; // 100 USDC
+
+        vm.prank(alice);
+        vault.deposit(amount);
+
+        // 20% fee → 20 USDC fee, 80 USDC net
+        assertEq(vault.protocolFees(), 20e6);
+        assertEq(vault.borrowerBalance(alice), 80e6);
+        assertEq(vault.totalDeposits(), 80e6);
+
+        // Vault holds full 100 USDC (80 deposits + 20 fees)
+        assertEq(usdc.balanceOf(address(vault)), 100e6);
+    }
+
+    function test_deposit_zeroFeeWhenBpsZero() public {
+        // Admin sets fee to 0
+        vm.prank(admin);
+        vault.setFeeBps(0);
+
+        uint256 amount = 50e6;
+        vm.prank(alice);
+        vault.deposit(amount);
+
+        assertEq(vault.borrowerBalance(alice), amount); // no fee
+        assertEq(vault.totalDeposits(), amount);
+        assertEq(vault.protocolFees(), 0);
+    }
+
+    function test_setFeeBps_basic() public {
+        vm.prank(admin);
+        vault.setFeeBps(1000); // 10%
+
+        assertEq(vault.feeBps(), 1000);
+    }
+
+    function test_setFeeBps_emitsEvent() public {
+        vm.expectEmit(false, false, false, true);
+        emit IDIEMVault.FeeBpsChanged(DEFAULT_FEE_BPS, 1000);
+
+        vm.prank(admin);
+        vault.setFeeBps(1000);
+    }
+
+    function test_setFeeBps_revertsNotAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert("DIEMVault: not admin");
+        vault.setFeeBps(1000);
+    }
+
+    function test_setFeeBps_revertsAboveMax() public {
+        vm.prank(admin);
+        vm.expectRevert("DIEMVault: fee exceeds max");
+        vault.setFeeBps(5001); // MAX_FEE_BPS = 5000
+    }
+
+    function test_setFeeBps_atMax() public {
+        vm.prank(admin);
+        vault.setFeeBps(5000); // exactly MAX_FEE_BPS
+        assertEq(vault.feeBps(), 5000);
+    }
+
+    function test_setFeeBps_canSetToZero() public {
+        vm.prank(admin);
+        vault.setFeeBps(0);
+        assertEq(vault.feeBps(), 0);
+    }
+
+    function test_deposit_usesUpdatedFee() public {
+        // Change fee from 20% to 10%
+        vm.prank(admin);
+        vault.setFeeBps(1000);
+
+        uint256 amount = 100e6;
+        vm.prank(alice);
+        vault.deposit(amount);
+
+        // 10% fee → 10 USDC fee, 90 USDC net
+        assertEq(vault.protocolFees(), 10e6);
+        assertEq(vault.borrowerBalance(alice), 90e6);
     }
 
     // ── Protocol fee withdrawal ─────────────────────────────────────────
 
     function test_withdrawProtocolFees_basic() public {
-        // Manually set protocol fees via a cheat (since Phase 1 has no
-        // on-chain fee accrual mechanism yet, we use vm.store)
-        _setProtocolFees(1000e6);
-        usdc.mint(address(vault), 1000e6);
+        // Deposit to accrue real fees
+        vm.prank(alice);
+        vault.deposit(100e6); // 20 USDC fee
 
         address treasury = makeAddr("treasury");
 
         vm.prank(admin);
-        vault.withdrawProtocolFees(treasury, 500e6);
+        vault.withdrawProtocolFees(treasury, 10e6);
 
-        assertEq(vault.protocolFees(), 500e6);
-        assertEq(usdc.balanceOf(treasury), 500e6);
+        assertEq(vault.protocolFees(), 10e6);
+        assertEq(usdc.balanceOf(treasury), 10e6);
     }
 
     function test_withdrawProtocolFees_emitsEvent() public {
@@ -266,9 +388,10 @@ contract DIEMVaultTest is Test {
         vault.unpause();
         vm.stopPrank();
 
+        uint256 amount = 50e6;
         vm.prank(alice);
-        vault.deposit(50e6);
-        assertEq(vault.borrowerBalance(alice), 50e6);
+        vault.deposit(amount);
+        assertEq(vault.borrowerBalance(alice), _netOf(amount));
     }
 
     // ── Admin: setMinDeposit ────────────────────────────────────────────
@@ -351,11 +474,15 @@ contract DIEMVaultTest is Test {
         // Bound between min deposit and initial balance
         amount = bound(amount, MIN_DEPOSIT, INITIAL_BALANCE);
 
+        uint256 fee = (amount * DEFAULT_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 net = amount - fee;
+
         vm.prank(alice);
         vault.deposit(amount);
 
-        assertEq(vault.borrowerBalance(alice), amount);
-        assertEq(vault.totalDeposits(), amount);
+        assertEq(vault.borrowerBalance(alice), net);
+        assertEq(vault.totalDeposits(), net);
+        assertEq(vault.protocolFees(), fee);
         assertEq(usdc.balanceOf(address(vault)), amount);
     }
 
@@ -363,15 +490,21 @@ contract DIEMVaultTest is Test {
         amountA = bound(amountA, MIN_DEPOSIT, INITIAL_BALANCE);
         amountB = bound(amountB, MIN_DEPOSIT, INITIAL_BALANCE);
 
+        uint256 feeA = (amountA * DEFAULT_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 feeB = (amountB * DEFAULT_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 netA = amountA - feeA;
+        uint256 netB = amountB - feeB;
+
         vm.prank(alice);
         vault.deposit(amountA);
 
         vm.prank(bob);
         vault.deposit(amountB);
 
-        assertEq(vault.borrowerBalance(alice), amountA);
-        assertEq(vault.borrowerBalance(bob), amountB);
-        assertEq(vault.totalDeposits(), amountA + amountB);
+        assertEq(vault.borrowerBalance(alice), netA);
+        assertEq(vault.borrowerBalance(bob), netB);
+        assertEq(vault.totalDeposits(), netA + netB);
+        assertEq(vault.protocolFees(), feeA + feeB);
         assertEq(usdc.balanceOf(address(vault)), amountA + amountB);
     }
 
@@ -379,6 +512,14 @@ contract DIEMVaultTest is Test {
         vm.prank(admin);
         vault.setMinDeposit(newMin);
         assertEq(vault.minDeposit(), newMin);
+    }
+
+    function testFuzz_setFeeBps(uint256 newBps) public {
+        newBps = bound(newBps, 0, 5000); // MAX_FEE_BPS
+
+        vm.prank(admin);
+        vault.setFeeBps(newBps);
+        assertEq(vault.feeBps(), newBps);
     }
 
     function testFuzz_withdrawProtocolFees(uint256 fees, uint256 withdrawAmount) public {
@@ -397,20 +538,20 @@ contract DIEMVaultTest is Test {
         assertEq(usdc.balanceOf(treasury), withdrawAmount);
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────
+    // ── Invariant: vault solvency ────────────────────────────────────────
 
-    /**
-     * @dev Directly set `protocolFees` storage slot for testing fee
-     *      withdrawal. In production, fees accrue via a different mechanism.
-     *
-     *      Storage layout of DIEMVault (OZ v5 ReentrancyGuard uses transient storage):
-     *        slot 0: admin (address, 20 bytes) + paused (bool, 1 byte) — packed
-     *        slot 1: minDeposit (uint256)
-     *        slot 2: totalDeposits (uint256)
-     *        slot 3: protocolFees (uint256)
-     *        slot 4: borrowerBalance mapping
-     */
-    function _setProtocolFees(uint256 amount) internal {
-        vm.store(address(vault), bytes32(uint256(3)), bytes32(amount));
+    function test_invariant_vaultSolvency() public {
+        // After deposits, vault balance == totalDeposits + protocolFees
+        vm.prank(alice);
+        vault.deposit(100e6);
+
+        vm.prank(bob);
+        vault.deposit(200e6);
+
+        assertEq(
+            usdc.balanceOf(address(vault)),
+            vault.totalDeposits() + vault.protocolFees(),
+            "Vault solvency: balance == totalDeposits + protocolFees"
+        );
     }
 }

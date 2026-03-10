@@ -43,6 +43,9 @@ interface IsDIEM {
     /// @notice Emitted when anyone redeploys excess liquid DIEM to Venice.
     event ExcessRedeployed(address indexed caller, uint256 amount);
 
+    /// @notice Emitted when anyone batches pending unstakes to Venice.
+    event VeniceUnstakeInitiated(address indexed caller, uint256 amount);
+
     // ── Views ───────────────────────────────────────────────────────────────
 
     function diem() external view returns (IERC20);
@@ -64,6 +67,9 @@ interface IsDIEM {
     /// @notice Total DIEM currently pending withdrawal across all users.
     function totalPendingWithdrawals() external view returns (uint256);
 
+    /// @notice DIEM withdrawal amounts not yet sent to Venice for unstaking.
+    function totalPendingNotInitiated() external view returns (uint256);
+
     /// @notice Withdrawal request for a specific user.
     function withdrawalRequests(address account) external view returns (uint256 amount, uint256 requestedAt);
 
@@ -78,7 +84,7 @@ interface IsDIEM {
     /// @notice Stake DIEM. Tokens are forwarded to Venice immediately.
     function stake(uint256 amount) external;
 
-    /// @notice Request withdrawal. Starts 24h delay. Initiates Venice unstake.
+    /// @notice Request withdrawal. Starts 24h delay. Call initiateVeniceUnstake() to batch-send to Venice.
     function requestWithdraw(uint256 amount) external;
 
     /// @notice Complete withdrawal after 24h delay + Venice cooldown.
@@ -97,6 +103,11 @@ interface IsDIEM {
 
     /// @notice Redeploy excess liquid DIEM (above pending withdrawals) to Venice.
     function redeployExcess() external;
+
+    /// @notice Batch-send accumulated withdrawal amounts to Venice. Anyone can call.
+    /// @dev Calls diemStaking.initiateUnstake() once for all pending amounts,
+    ///      minimizing cooldown resets.
+    function initiateVeniceUnstake() external;
 
     // ── Operator ────────────────────────────────────────────────────────────
 
