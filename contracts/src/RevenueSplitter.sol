@@ -42,6 +42,7 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     // ── Constants ────────────────────────────────────────────────────────
 
     uint256 private constant BPS_DENOMINATOR = 10_000;
+    uint32 private constant MIN_TWAP_WINDOW = 300; // 5 minutes minimum
 
     // ── Immutables ──────────────────────────────────────────────────────
 
@@ -80,6 +81,11 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     /// @notice Tick spacing of the DIEM/USDC CL pool.
     int24 public override tickSpacing;
 
+    /// @notice Absolute minimum DIEM output per USDC (18 decimals).
+    /// Acts as a circuit breaker if TWAP is stale or manipulated.
+    /// 0 = disabled. e.g. 0.5e18 means at least 0.5 DIEM per USDC.
+    uint256 public override minDiemPerUsdc;
+
     // ── Modifiers ───────────────────────────────────────────────────────
 
     modifier onlyAdmin() {
@@ -117,7 +123,7 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         require(_admin != address(0), "RevenueSplitter: zero admin");
         require(_sdiemBps <= BPS_DENOMINATOR, "RevenueSplitter: bps > 10000");
         require(_maxSlippageBps <= 1000, "RevenueSplitter: slippage > 10%");
-        require(_twapWindow > 0, "RevenueSplitter: zero twap window");
+        require(_twapWindow >= MIN_TWAP_WINDOW, "RevenueSplitter: twap window too short");
         require(_tickSpacing > 0, "RevenueSplitter: zero tick spacing");
 
         usdc = IERC20(_usdc);
@@ -177,9 +183,10 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         if (toCsdiem > 0) {
             uint256 diemReceived = _swapUsdcToDiem(toCsdiem);
 
-            // Approve csDIEM to pull DIEM for donation
-            diem.safeIncreaseAllowance(address(csdiem), diemReceived);
+            // Approve csDIEM to pull DIEM for donation (forceApprove to prevent residual)
+            diem.forceApprove(address(csdiem), diemReceived);
             csdiem.donate(diemReceived);
+            diem.forceApprove(address(csdiem), 0);
 
             emit SwappedAndDonated(toCsdiem, diemReceived);
         }
@@ -200,22 +207,33 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         // 2. Apply slippage tolerance: amountOutMin = twapOut * (1 - maxSlippageBps / 10000)
         uint256 amountOutMin = (twapOut * (BPS_DENOMINATOR - maxSlippageBps)) / BPS_DENOMINATOR;
 
-        // 3. Approve router to spend USDC
-        usdc.safeIncreaseAllowance(swapRouter, usdcAmount);
+        // 3. Circuit breaker: enforce absolute minimum DIEM-per-USDC floor
+        //    Prevents swapping at deeply unfavorable rates if TWAP itself is stale/manipulated
+        if (minDiemPerUsdc > 0) {
+            uint256 absoluteMin = (usdcAmount * minDiemPerUsdc) / 1e6; // USDC is 6 decimals
+            require(amountOutMin >= absoluteMin, "RevenueSplitter: price below floor");
+        }
 
-        // 4. Execute swap via Slipstream exactInputSingle
+        // 4. Approve router to spend USDC (forceApprove to prevent residual accumulation)
+        usdc.forceApprove(swapRouter, usdcAmount);
+
+        // 5. Execute swap via Slipstream exactInputSingle
+        //    deadline = block.timestamp + 5 min to prevent indefinite mempool holding
         uint256 amountOut = ICLSwapRouter(swapRouter).exactInputSingle(
             ICLSwapRouter.ExactInputSingleParams({
                 tokenIn: address(usdc),
                 tokenOut: address(diem),
                 tickSpacing: tickSpacing,
                 recipient: address(this),
-                deadline: block.timestamp,
+                deadline: block.timestamp + 300,
                 amountIn: usdcAmount,
                 amountOutMinimum: amountOutMin,
                 sqrtPriceLimitX96: 0
             })
         );
+
+        // 6. Revoke residual allowance
+        usdc.forceApprove(swapRouter, 0);
 
         require(amountOut > 0, "RevenueSplitter: swap returned zero");
         return amountOut;
@@ -264,7 +282,7 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
 
     /// @inheritdoc IRevenueSplitter
     function setTwapWindow(uint32 newWindow) external override onlyAdmin {
-        require(newWindow > 0, "RevenueSplitter: zero twap window");
+        require(newWindow >= MIN_TWAP_WINDOW, "RevenueSplitter: twap window too short");
         uint32 old = twapWindow;
         twapWindow = newWindow;
         emit TwapWindowUpdated(old, newWindow);
@@ -276,6 +294,13 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         int24 old = tickSpacing;
         tickSpacing = newSpacing;
         emit TickSpacingUpdated(old, newSpacing);
+    }
+
+    /// @inheritdoc IRevenueSplitter
+    function setMinDiemPerUsdc(uint256 newMin) external override onlyAdmin {
+        uint256 old = minDiemPerUsdc;
+        minDiemPerUsdc = newMin;
+        emit MinDiemPerUsdcUpdated(old, newMin);
     }
 
     /// @inheritdoc IRevenueSplitter

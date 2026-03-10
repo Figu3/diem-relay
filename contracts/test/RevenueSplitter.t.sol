@@ -124,8 +124,12 @@ contract RevenueSplitterTest is Test {
     }
 
     function test_constructor_revertsOnZeroTwapWindow() public {
-        vm.expectRevert("RevenueSplitter: zero twap window");
+        vm.expectRevert("RevenueSplitter: twap window too short");
         new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, 0, TICK_SPACING);
+
+        // Also test below minimum (299 < 300)
+        vm.expectRevert("RevenueSplitter: twap window too short");
+        new RevenueSplitter(address(usdcToken), address(diemToken), address(sdiem), address(csdiem), address(router), address(oraclePool), admin, 5000, MIN_DISTRIBUTION, MAX_SLIPPAGE, 299, TICK_SPACING);
     }
 
     function test_constructor_revertsOnZeroTickSpacing() public {
@@ -362,8 +366,13 @@ contract RevenueSplitterTest is Test {
 
     function test_setTwapWindow_revertsZero() public {
         vm.prank(admin);
-        vm.expectRevert("RevenueSplitter: zero twap window");
+        vm.expectRevert("RevenueSplitter: twap window too short");
         splitter.setTwapWindow(0);
+
+        // Also test below minimum (299 < 300)
+        vm.prank(admin);
+        vm.expectRevert("RevenueSplitter: twap window too short");
+        splitter.setTwapWindow(299);
     }
 
     function test_setTickSpacing() public {

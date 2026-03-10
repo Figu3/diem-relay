@@ -337,10 +337,22 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
      * @dev Calls diemStaking.initiateUnstake() once for all pending amounts
      *      that haven't been sent yet. Minimizes cooldown resets compared to
      *      calling initiateUnstake() on every individual withdrawal request.
+     *
+     *      Guarded: reverts if Venice cooldown is active to prevent griefing.
+     *      Without this check, an attacker could cycle 1-DIEM requestWithdraw +
+     *      initiateVeniceUnstake to permanently reset the cooldown for ALL
+     *      pending amounts, blocking legitimate withdrawals indefinitely.
      */
     function initiateVeniceUnstake() external override nonReentrant {
         uint256 amount = totalPendingNotInitiated;
         require(amount > 0, "sDIEM: nothing to initiate");
+
+        // Guard: prevent cooldown reset griefing
+        (, uint256 cooldownEnd, uint256 pending) = diemStaking.stakedInfos(address(this));
+        require(
+            pending == 0 || block.timestamp >= cooldownEnd,
+            "sDIEM: Venice cooldown active"
+        );
 
         // Effects
         totalPendingNotInitiated = 0;

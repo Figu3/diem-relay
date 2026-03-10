@@ -47,6 +47,9 @@ interface IRevenueSplitter {
     /// @notice Emitted when admin updates the tick spacing for CL swaps.
     event TickSpacingUpdated(int24 oldSpacing, int24 newSpacing);
 
+    /// @notice Emitted when admin updates the minimum DIEM per USDC circuit breaker.
+    event MinDiemPerUsdcUpdated(uint256 oldMin, uint256 newMin);
+
     event Paused(address indexed by);
     event Unpaused(address indexed by);
     event AdminTransferStarted(address indexed currentAdmin, address indexed pendingAdmin);
@@ -75,6 +78,9 @@ interface IRevenueSplitter {
 
     /// @notice Tick spacing of the DIEM/USDC CL pool for swap routing.
     function tickSpacing() external view returns (int24);
+
+    /// @notice Absolute minimum DIEM per USDC (circuit breaker). 0 = disabled.
+    function minDiemPerUsdc() external view returns (uint256);
 
     /// @notice Current USDC balance available for distribution.
     function pendingRevenue() external view returns (uint256);
@@ -116,6 +122,9 @@ interface IRevenueSplitter {
 
     /// @notice Set the tick spacing for CL swaps.
     function setTickSpacing(int24 newSpacing) external;
+
+    /// @notice Set the minimum DIEM per USDC circuit breaker. 0 = disabled.
+    function setMinDiemPerUsdc(uint256 newMin) external;
 
     function pause() external;
     function unpause() external;
