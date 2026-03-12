@@ -22,9 +22,10 @@ import {
   type Log,
   type PublicClient,
 } from "viem";
-import { mainnet } from "viem/chains";
+import { mainnet, base, sepolia } from "viem/chains";
 import fs from "fs";
 import path from "path";
+import { config, tomorrowUtc } from "./config";
 
 // ── Config ──────────────────────────────────────────────────────────────
 
@@ -106,7 +107,10 @@ async function ensureBorrower(address: string): Promise<void> {
 async function creditBorrower(
   address: string,
   amountUsd: number,
-  txHash: string
+  txHash: string,
+  validDate: string,
+  purchaseType: "advance" | "sameday",
+  discountRate: number
 ): Promise<{ alreadyProcessed: boolean }> {
   const res = await fetch(`${RELAY_URL}/admin/credit`, {
     method: "POST",
@@ -114,6 +118,9 @@ async function creditBorrower(
     body: JSON.stringify({
       address,
       amountUsd,
+      validDate,
+      purchaseType,
+      discountRate,
       txHash,
       note: `on-chain deposit (watcher)`,
     }),
@@ -158,8 +165,15 @@ async function processDepositEvent(log: Log): Promise<void> {
   // Ensure borrower exists in relay
   await ensureBorrower(borrower);
 
-  // Credit the relay balance
-  const { alreadyProcessed } = await creditBorrower(borrower, amountUsd, txHash);
+  // Credit the relay balance — vault deposits are advance buys (next-day credits at fixed discount)
+  const { alreadyProcessed } = await creditBorrower(
+    borrower,
+    amountUsd,
+    txHash,
+    tomorrowUtc(),
+    "advance",
+    config.advanceDiscountRate
+  );
   if (alreadyProcessed) {
     console.log(`  ↳ Already processed, skipped`);
   } else {
@@ -180,8 +194,16 @@ async function main() {
   console.log(dim(`  Chain:   ${CHAIN_ID}`));
 
   // Create viem public client
+  const knownChains: Record<number, any> = { 1: mainnet, 8453: base, 11155111: sepolia };
+  const chain = knownChains[CHAIN_ID] ?? {
+    id: CHAIN_ID,
+    name: `Chain ${CHAIN_ID}`,
+    nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+    rpcUrls: { default: { http: [RPC_URL] } },
+  };
+
   const client: PublicClient = createPublicClient({
-    chain: CHAIN_ID === 1 ? mainnet : { id: CHAIN_ID, name: `Chain ${CHAIN_ID}`, nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 }, rpcUrls: { default: { http: [RPC_URL] } } },
+    chain,
     transport: http(RPC_URL),
   }) as PublicClient;
 

@@ -15,6 +15,7 @@
     "test": "cd contracts && forge test"
   },
   "dependencies": {
+    "docx": "^9.6.0",
     "hono": "^4.7.0",
     "viem": "^2.25.0"
   },

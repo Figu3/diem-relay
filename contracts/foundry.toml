@@ -20,6 +20,8 @@ depth = 50
 
 [etherscan]
 sepolia = { key = "${ETHERSCAN_API_KEY}" }
+base = { key = "${BASESCAN_API_KEY}", url = "https://api.basescan.org/api" }
 
 [rpc_endpoints]
 sepolia = "${SEPOLIA_RPC_URL}"
+base = "${BASE_RPC_URL}"

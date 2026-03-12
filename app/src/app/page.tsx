@@ -3,7 +3,8 @@
 import { Header } from "@/components/Header";
 import { PortfolioSummary } from "@/components/PortfolioSummary";
 import { SDiemCard } from "@/components/SDiemCard";
-import { CSDiemCard } from "@/components/CSDiemCard";
+
+export const dynamic = "force-dynamic";
 
 export default function Home() {
   return (
@@ -11,9 +12,8 @@ export default function Home() {
       <Header />
       <PortfolioSummary />
 
-      <div className="grid gap-6 px-6 pb-12 md:grid-cols-2">
+      <div className="grid gap-6 px-6 pb-12 md:grid-cols-1 md:max-w-lg md:mx-auto">
         <SDiemCard />
-        <CSDiemCard />
       </div>
     </div>
   );

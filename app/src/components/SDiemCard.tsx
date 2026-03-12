@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { parseUnits } from "viem";
 import { useAccount } from "wagmi";
 
@@ -17,12 +17,14 @@ import { useSDiem } from "@/hooks/useSDiem";
 import { useDiemToken } from "@/hooks/useDiemToken";
 import { useApproval } from "@/hooks/useApproval";
 import { useStake } from "@/hooks/useStake";
-import { useWithdrawSDiem } from "@/hooks/useWithdrawSDiem";
+import { useRequestWithdraw, useCompleteWithdraw } from "@/hooks/useWithdrawSDiem";
 import { useClaimReward } from "@/hooks/useClaimReward";
 import { useExit } from "@/hooks/useExit";
 import { DIEM_TOKEN, SDIEM_ADDRESS, DIEM_DECIMALS } from "@/config/contracts";
 import { formatDiem, formatUsdc } from "@/lib/format";
 import { calcSDiemApr } from "@/lib/apr";
+
+const WITHDRAWAL_DELAY = 24n * 60n * 60n; // 24h in seconds
 
 export function SDiemCard() {
   const { isConnected } = useAccount();
@@ -30,7 +32,8 @@ export function SDiemCard() {
   const diem = useDiemToken(SDIEM_ADDRESS);
   const approval = useApproval(DIEM_TOKEN, SDIEM_ADDRESS);
   const stakeAction = useStake();
-  const withdrawAction = useWithdrawSDiem();
+  const requestAction = useRequestWithdraw();
+  const completeAction = useCompleteWithdraw();
   const claimAction = useClaimReward();
   const exitAction = useExit();
 
@@ -48,21 +51,31 @@ export function SDiemCard() {
     stakeAction.stake(amount);
   };
 
-  const handleWithdraw = () => {
+  const handleRequestWithdraw = () => {
     if (!withdrawAmt) return;
     const amount = parseUnits(withdrawAmt, DIEM_DECIMALS);
-    withdrawAction.withdraw(amount);
+    requestAction.requestWithdraw(amount);
   };
 
   const staking =
     approval.isPending || approval.isConfirming ||
     stakeAction.isPending || stakeAction.isConfirming;
-  const withdrawing =
-    withdrawAction.isPending || withdrawAction.isConfirming;
+  const requesting =
+    requestAction.isPending || requestAction.isConfirming;
+  const completing =
+    completeAction.isPending || completeAction.isConfirming;
   const claiming =
     claimAction.isPending || claimAction.isConfirming;
   const exiting =
     exitAction.isPending || exitAction.isConfirming;
+
+  const hasPending = sdiem.pendingWithdrawAmount > 0n;
+  const unlockTime = sdiem.pendingWithdrawRequestedAt + WITHDRAWAL_DELAY;
+  const canComplete = useMemo(() => {
+    if (!hasPending) return false;
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    return now >= unlockTime;
+  }, [hasPending, unlockTime]);
 
   return (
     <VaultCard
@@ -139,6 +152,39 @@ export function SDiemCard() {
               label: "Withdraw",
               content: (
                 <div className="space-y-3">
+                  {/* Pending withdrawal banner */}
+                  {hasPending && (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                      <p className="text-sm font-medium text-amber-400">
+                        Pending: {formatDiem(sdiem.pendingWithdrawAmount)} DIEM
+                      </p>
+                      {canComplete ? (
+                        <p className="mt-1 text-xs text-green-400">Ready to complete</p>
+                      ) : (
+                        <div className="mt-1 flex items-center gap-1 text-xs text-gray-400">
+                          <span>Unlocks in</span>
+                          <CountdownTimer periodFinish={unlockTime} />
+                        </div>
+                      )}
+                      <button
+                        onClick={() => completeAction.completeWithdraw()}
+                        disabled={!canComplete || completing}
+                        className="mt-2 w-full rounded-lg border border-green-500/40 py-2 text-sm font-medium text-green-400 transition hover:bg-green-500/10 disabled:opacity-40"
+                      >
+                        {completing ? "Completing..." : "Complete Withdrawal"}
+                      </button>
+                      <TxStatus
+                        isPending={completeAction.isPending}
+                        isConfirming={completeAction.isConfirming}
+                        isSuccess={completeAction.isSuccess}
+                        error={completeAction.error}
+                        hash={completeAction.hash}
+                        onReset={completeAction.reset}
+                      />
+                    </div>
+                  )}
+
+                  {/* Request new withdrawal */}
                   <AmountInput
                     value={withdrawAmt}
                     onChange={setWithdrawAmt}
@@ -148,10 +194,10 @@ export function SDiemCard() {
                   <ActionButton
                     needsApproval={false}
                     onApprove={() => {}}
-                    onAction={handleWithdraw}
-                    actionLabel="Withdraw DIEM"
+                    onAction={handleRequestWithdraw}
+                    actionLabel="Request Withdraw (24h delay)"
                     disabled={!withdrawAmt || withdrawAmt === "0" || sdiem.paused}
-                    loading={withdrawing}
+                    loading={requesting}
                   />
                   {sdiem.userStaked > 0n && (
                     <button
@@ -163,12 +209,12 @@ export function SDiemCard() {
                     </button>
                   )}
                   <TxStatus
-                    isPending={withdrawAction.isPending || exitAction.isPending}
-                    isConfirming={withdrawAction.isConfirming || exitAction.isConfirming}
-                    isSuccess={withdrawAction.isSuccess || exitAction.isSuccess}
-                    error={withdrawAction.error ?? exitAction.error}
-                    hash={withdrawAction.hash ?? exitAction.hash}
-                    onReset={() => { withdrawAction.reset(); exitAction.reset(); }}
+                    isPending={requestAction.isPending || exitAction.isPending}
+                    isConfirming={requestAction.isConfirming || exitAction.isConfirming}
+                    isSuccess={requestAction.isSuccess || exitAction.isSuccess}
+                    error={requestAction.error ?? exitAction.error}
+                    hash={requestAction.hash ?? exitAction.hash}
+                    onReset={() => { requestAction.reset(); exitAction.reset(); }}
                   />
                 </div>
               ),

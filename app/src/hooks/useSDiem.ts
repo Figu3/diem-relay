@@ -17,6 +17,7 @@ export function useSDiem() {
       { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "paused" },
       { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "balanceOf", args: [user] },
       { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "earned", args: [user] },
+      { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "withdrawalRequests", args: [user] },
     ],
     query: { refetchInterval: 15_000 },
   });
@@ -26,6 +27,8 @@ export function useSDiem() {
       ? (data[index].result as T)
       : undefined;
 
+  const withdrawalData = get<readonly [bigint, bigint]>(6);
+
   return {
     totalStaked: get<bigint>(0) ?? 0n,
     rewardRate: get<bigint>(1) ?? 0n,
@@ -33,6 +36,8 @@ export function useSDiem() {
     paused: get<boolean>(3) ?? false,
     userStaked: address ? (get<bigint>(4) ?? 0n) : 0n,
     earned: address ? (get<bigint>(5) ?? 0n) : 0n,
+    pendingWithdrawAmount: address ? (withdrawalData?.[0] ?? 0n) : 0n,
+    pendingWithdrawRequestedAt: address ? (withdrawalData?.[1] ?? 0n) : 0n,
     isLoading,
     refetch,
   };

@@ -6,7 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { sDiemAbi } from "@/config/abis";
 import { SDIEM_ADDRESS } from "@/config/contracts";
 
-export function useWithdrawSDiem() {
+export function useRequestWithdraw() {
   const queryClient = useQueryClient();
   const { writeContract, data: hash, isPending, error, reset } = useWriteContract();
 
@@ -17,14 +17,36 @@ export function useWithdrawSDiem() {
     if (isSuccess) queryClient.invalidateQueries();
   }, [isSuccess, queryClient]);
 
-  const withdraw = (amount: bigint) => {
+  const requestWithdraw = (amount: bigint) => {
     writeContract({
       address: SDIEM_ADDRESS,
       abi: sDiemAbi,
-      functionName: "withdraw",
+      functionName: "requestWithdraw",
       args: [amount],
     });
   };
 
-  return { withdraw, isPending, isConfirming, isSuccess, error, hash, reset };
+  return { requestWithdraw, isPending, isConfirming, isSuccess, error, hash, reset };
+}
+
+export function useCompleteWithdraw() {
+  const queryClient = useQueryClient();
+  const { writeContract, data: hash, isPending, error, reset } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } =
+    useWaitForTransactionReceipt({ hash });
+
+  useEffect(() => {
+    if (isSuccess) queryClient.invalidateQueries();
+  }, [isSuccess, queryClient]);
+
+  const completeWithdraw = () => {
+    writeContract({
+      address: SDIEM_ADDRESS,
+      abi: sDiemAbi,
+      functionName: "completeWithdraw",
+    });
+  };
+
+  return { completeWithdraw, isPending, isConfirming, isSuccess, error, hash, reset };
 }

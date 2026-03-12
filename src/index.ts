@@ -4,7 +4,14 @@ import { logger } from "hono/logger";
 import { bodyLimit } from "hono/body-limit";
 import { isAddress } from "viem";
 import crypto from "crypto";
-import { config, validateConfig } from "./config";
+import {
+  config,
+  validateConfig,
+  todayUtc,
+  tomorrowUtc,
+  isSameDaySaleOpen,
+  currentDutchAuctionRate,
+} from "./config";
 import { authenticate, buildAuthMessage, validateSession } from "./auth";
 import { preflightCheck, meterUsage, refundPreflight } from "./metering";
 import { forwardChatCompletion, listModels } from "./proxy";
@@ -16,6 +23,9 @@ import {
   getAllBorrowers,
   getUsageSummary,
   getRecentUsage,
+  getCredits,
+  getTodayBalance,
+  sweepExpiredCredits,
   cleanExpiredSessions,
   invalidateBorrowerSessions,
 } from "./db";
@@ -66,6 +76,98 @@ setInterval(() => {
 // ── Health ──
 
 app.get("/health", (c) => c.json({ status: "ok", timestamp: Date.now() }));
+
+// ── Pricing info (public) ──
+
+app.get("/v1/pricing", (c) => {
+  const sameDayOpen = isSameDaySaleOpen();
+  return c.json({
+    advance: {
+      discountRate: config.advanceDiscountRate,
+      validDate: tomorrowUtc(),
+      available: true,
+    },
+    sameday: {
+      discountRate: sameDayOpen ? currentDutchAuctionRate() : null,
+      validDate: todayUtc(),
+      available: sameDayOpen,
+      cutoffHourUtc: config.saleCutoffHourUtc,
+    },
+    protocolFeeBps: config.protocolFeeBps,
+    maxDailySpendUsd: config.maxDailySpendUsd,
+  });
+});
+
+// ── Buy endpoint (x402 / supplier integration) ──────────────────────────
+//
+// Phase 0: Trusted supplier model — requires admin secret.
+//   cheaptokens.ai (or any authorized frontend) collects USDC payment from user,
+//   then calls POST /v1/buy to issue credits at the current rate.
+//
+// Phase 1: Direct on-chain verification — txHash verified against vault contract,
+//   no admin secret needed. Anyone can call with a valid vault deposit txHash.
+
+app.post("/v1/buy", requireAdmin(), async (c) => {
+  const body = await c.req.json<{
+    address: string;
+    amountUsd: number;
+    purchaseType?: "advance" | "sameday";
+    txHash?: string;
+  }>();
+
+  if (!body.address || !body.amountUsd || body.amountUsd <= 0) {
+    return c.json({ error: "address and positive amountUsd required" }, 400);
+  }
+  if (!isAddress(body.address)) {
+    return c.json({ error: "Invalid Ethereum address" }, 400);
+  }
+
+  const purchaseType = body.purchaseType ?? "sameday";
+
+  // Enforce cutoff for same-day purchases
+  if (purchaseType === "sameday" && !isSameDaySaleOpen()) {
+    return c.json(
+      {
+        error: "Same-day credit sales closed",
+        cutoffHourUtc: config.saleCutoffHourUtc,
+        suggestion: "Use purchaseType 'advance' for next-day credits",
+      },
+      400
+    );
+  }
+
+  const discountRate =
+    purchaseType === "advance"
+      ? config.advanceDiscountRate
+      : currentDutchAuctionRate();
+  const validDate =
+    purchaseType === "advance" ? tomorrowUtc() : todayUtc();
+
+  const { creditId, alreadyProcessed } = addCredit({
+    address: body.address,
+    amountUsd: body.amountUsd,
+    validDate,
+    purchaseType,
+    discountRate,
+    txHash: body.txHash,
+    note: `x402 buy (${purchaseType})`,
+  });
+
+  const todayBalance = getTodayBalance(body.address);
+
+  return c.json(
+    {
+      creditId,
+      alreadyProcessed,
+      validDate,
+      purchaseType,
+      discountRate,
+      creditedUsd: body.amountUsd,
+      todayBalance,
+    },
+    alreadyProcessed ? 200 : 201
+  );
+});
 
 // ── Auth endpoints ──
 
@@ -178,6 +280,7 @@ app.post("/v1/chat/completions", requireSession(), async (c) => {
         model: body.model,
         promptTokens: venice.usage.promptTokens,
         completionTokens: venice.usage.completionTokens,
+        cacheTokens: venice.usage.cacheTokens ?? 0,
         requestId: venice.data?.id,
       },
       preflight.reservedUsd
@@ -206,14 +309,25 @@ app.get("/v1/balance", requireSession(), (c) => {
   const b = getBorrower(borrower);
   if (!b) return c.json({ error: "Not found" }, 404);
 
+  const todayBalance = getTodayBalance(borrower);
+  const todayCredits = getCredits(borrower, todayUtc());
+
   return c.json({
     address: b.address,
     alias: b.alias,
-    balanceUsd: b.balance_usd,
+    balanceUsd: todayBalance,
     totalSpent: b.total_spent,
     dailySpent: b.daily_spent,
     maxDailySpend: config.maxDailySpendUsd,
-    discountRate: config.discountRate,
+    credits: {
+      today: todayCredits.map((cr) => ({
+        id: cr.id,
+        originalUsd: cr.original_usd,
+        remainingUsd: cr.remaining_usd,
+        purchaseType: cr.purchase_type,
+        discountRate: cr.discount_rate,
+      })),
+    },
   });
 });
 
@@ -255,6 +369,9 @@ app.post("/admin/credit", requireAdmin(), async (c) => {
   const body = await c.req.json<{
     address: string;
     amountUsd: number;
+    validDate?: string;
+    purchaseType?: "advance" | "sameday";
+    discountRate?: number;
     txHash?: string;
     note?: string;
   }>();
@@ -263,8 +380,18 @@ app.post("/admin/credit", requireAdmin(), async (c) => {
     return c.json({ error: "address and amountUsd required" }, 400);
   }
 
-  const { borrower, alreadyProcessed } = addCredit(body.address, body.amountUsd, body.txHash, body.note);
-  return c.json({ ...borrower, alreadyProcessed });
+  const { creditId, alreadyProcessed } = addCredit({
+    address: body.address,
+    amountUsd: body.amountUsd,
+    validDate: body.validDate ?? todayUtc(),
+    purchaseType: body.purchaseType ?? "advance",
+    discountRate: body.discountRate ?? config.advanceDiscountRate,
+    txHash: body.txHash,
+    note: body.note,
+  });
+
+  const borrower = getBorrower(body.address);
+  return c.json({ creditId, alreadyProcessed, borrower });
 });
 
 // M-2: Suspend/unsuspend borrower + invalidate sessions
@@ -297,6 +424,12 @@ app.post("/admin/borrowers/:address/unsuspend", requireAdmin(), (c) => {
   return c.json({ suspended: false });
 });
 
+// Admin: manually sweep expired credits
+app.post("/admin/sweep", requireAdmin(), (c) => {
+  const result = sweepExpiredCredits();
+  return c.json(result);
+});
+
 app.get("/admin/borrowers", requireAdmin(), (c) => {
   return c.json(getAllBorrowers());
 });
@@ -307,7 +440,8 @@ app.get("/admin/borrowers/:address", requireAdmin(), (c) => {
   if (!borrower) return c.json({ error: "Not found" }, 404);
 
   const usage = getUsageSummary(address);
-  return c.json({ borrower, usage });
+  const credits = getCredits(address);
+  return c.json({ borrower, usage, credits });
 });
 
 app.get("/admin/usage", requireAdmin(), (c) => {
@@ -335,6 +469,11 @@ app.get("/admin/stats", requireAdmin(), (c) => {
 
 const cleanupInterval = setInterval(() => {
   cleanExpiredSessions();
+  // Sweep expired credits every minute (fast no-op if nothing to sweep)
+  const swept = sweepExpiredCredits();
+  if (swept.count > 0) {
+    console.log(`  Swept ${swept.count} expired credits ($${swept.totalUsd.toFixed(2)})`);
+  }
 }, 60_000); // every minute
 
 // ── L-5: Graceful shutdown ──
@@ -354,9 +493,11 @@ process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 // ── Start ──
 
-console.log(`\n  DIEM Relay v0.1.0`);
+console.log(`\n  DIEM Relay v0.2.0`);
 console.log(`  Listening on ${config.host}:${config.port}`);
-console.log(`  Discount rate: ${config.discountRate * 100}%`);
+console.log(`  Advance discount: ${config.advanceDiscountRate * 100}%`);
+console.log(`  Dutch auction: ${config.dutchAuction.minDiscountRate * 100}% → ${config.dutchAuction.maxDiscountRate * 100}%`);
+console.log(`  Sale cutoff: ${config.saleCutoffHourUtc}:00 UTC`);
 console.log(`  Protocol fee: ${config.protocolFeeBps / 100}%`);
 console.log(`  Daily limit: $${config.maxDailySpendUsd}\n`);
 

@@ -1,15 +1,17 @@
-import { getDefaultConfig } from "@rainbow-me/rainbowkit";
+import { createConfig, http } from "wagmi";
 import { base } from "wagmi/chains";
-import { http } from "wagmi";
+import { injected, coinbaseWallet } from "wagmi/connectors";
 
 const alchemyUrl =
   process.env.NEXT_PUBLIC_ALCHEMY_URL ??
   "https://base-mainnet.g.alchemy.com/v2/demo";
 
-export const config = getDefaultConfig({
-  appName: "DIEM Staking",
-  projectId: process.env.NEXT_PUBLIC_WC_PROJECT_ID ?? "placeholder",
+export const config = createConfig({
   chains: [base],
+  connectors: [
+    injected(),
+    coinbaseWallet({ appName: "DIEM Staking" }),
+  ],
   transports: {
     [base.id]: http(alchemyUrl),
   },

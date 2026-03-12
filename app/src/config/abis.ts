@@ -74,10 +74,27 @@ export const sDiemAbi = [
   },
   {
     type: "function",
-    name: "withdraw",
+    name: "requestWithdraw",
     inputs: [{ name: "amount", type: "uint256" }],
     outputs: [],
     stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "completeWithdraw",
+    inputs: [],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "withdrawalRequests",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [
+      { name: "amount", type: "uint256" },
+      { name: "requestedAt", type: "uint256" },
+    ],
+    stateMutability: "view",
   },
   {
     type: "function",
