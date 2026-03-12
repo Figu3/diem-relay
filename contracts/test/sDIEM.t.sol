@@ -885,6 +885,97 @@ contract sDIEMTest is Test {
         assertApproxEqAbs(earned, expected, 2);
     }
 
+    // ── EIP-1271 Signature Verification ────────────────────────────────
+
+    uint256 constant SIGNER_PK = 0xA11CE;
+    uint256 constant WRONG_PK = 0xBAD;
+    bytes4 constant EIP1271_MAGIC = bytes4(0x1626ba7e);
+    bytes4 constant EIP1271_FAIL = bytes4(0xffffffff);
+
+    function _deployWithKnownAdmin() internal returns (sDIEM s, address signer) {
+        signer = vm.addr(SIGNER_PK);
+        s = new sDIEM(
+            address(diemToken),
+            address(usdcToken),
+            signer,
+            operator
+        );
+    }
+
+    function test_isValidSignature_validAdminSig() public {
+        (sDIEM s,) = _deployWithKnownAdmin();
+
+        bytes32 hash = keccak256("Venice auth message");
+        (uint8 v, bytes32 r, bytes32 ss) = vm.sign(SIGNER_PK, hash);
+        bytes memory signature = abi.encodePacked(r, ss, v);
+
+        assertEq(s.isValidSignature(hash, signature), EIP1271_MAGIC);
+    }
+
+    function test_isValidSignature_rejectsWrongSigner() public {
+        (sDIEM s,) = _deployWithKnownAdmin();
+
+        bytes32 hash = keccak256("Venice auth message");
+        (uint8 v, bytes32 r, bytes32 ss) = vm.sign(WRONG_PK, hash);
+        bytes memory signature = abi.encodePacked(r, ss, v);
+
+        assertEq(s.isValidSignature(hash, signature), EIP1271_FAIL);
+    }
+
+    function test_isValidSignature_afterAdminTransfer() public {
+        (sDIEM s, address oldAdmin) = _deployWithKnownAdmin();
+
+        uint256 newAdminPk = 0xBEEF;
+        address newAdmin = vm.addr(newAdminPk);
+
+        // Two-step admin transfer
+        vm.prank(oldAdmin);
+        s.transferAdmin(newAdmin);
+        vm.prank(newAdmin);
+        s.acceptAdmin();
+
+        bytes32 hash = keccak256("Venice auth after transfer");
+
+        // Old admin's signature should FAIL
+        (uint8 v, bytes32 r, bytes32 ss) = vm.sign(SIGNER_PK, hash);
+        bytes memory oldSig = abi.encodePacked(r, ss, v);
+        assertEq(s.isValidSignature(hash, oldSig), EIP1271_FAIL);
+
+        // New admin's signature should SUCCEED
+        (v, r, ss) = vm.sign(newAdminPk, hash);
+        bytes memory newSig = abi.encodePacked(r, ss, v);
+        assertEq(s.isValidSignature(hash, newSig), EIP1271_MAGIC);
+    }
+
+    function test_isValidSignature_wrongHash() public {
+        (sDIEM s,) = _deployWithKnownAdmin();
+
+        // Sign one hash
+        bytes32 signedHash = keccak256("message A");
+        (uint8 v, bytes32 r, bytes32 ss) = vm.sign(SIGNER_PK, signedHash);
+        bytes memory signature = abi.encodePacked(r, ss, v);
+
+        // Verify against a DIFFERENT hash — should fail
+        bytes32 differentHash = keccak256("message B");
+        assertEq(s.isValidSignature(differentHash, signature), EIP1271_FAIL);
+    }
+
+    function testFuzz_isValidSignature(bytes32 hash) public {
+        (sDIEM s,) = _deployWithKnownAdmin();
+
+        // Admin signature should always be valid for any hash
+        (uint8 v, bytes32 r, bytes32 ss) = vm.sign(SIGNER_PK, hash);
+        bytes memory signature = abi.encodePacked(r, ss, v);
+        assertEq(s.isValidSignature(hash, signature), EIP1271_MAGIC);
+
+        // Wrong signer should always fail
+        (v, r, ss) = vm.sign(WRONG_PK, hash);
+        signature = abi.encodePacked(r, ss, v);
+        assertEq(s.isValidSignature(hash, signature), EIP1271_FAIL);
+    }
+
+    // ── Fuzz tests ──────────────────────────────────────────────────────
+
     function testFuzz_multiStakerFairness(uint256 aliceStake, uint256 bobStake) public {
         aliceStake = bound(aliceStake, 1e18, 500e18);
         bobStake = bound(bobStake, 1e18, 500e18);

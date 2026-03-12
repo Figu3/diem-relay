@@ -14,6 +14,10 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  *
  * Venice management (claimFromVenice, redeployExcess) is fully
  * permissionless — anyone can call when conditions are met.
+ *
+ * The implementation also supports EIP-1271 (IERC1271) so Venice can
+ * verify the contract's admin signed authentication messages — this
+ * links the on-chain stake to the operator's Venice API account.
  */
 interface IsDIEM {
     // ── Structs ─────────────────────────────────────────────────────────────

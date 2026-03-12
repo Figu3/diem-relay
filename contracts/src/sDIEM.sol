@@ -4,6 +4,8 @@ pragma solidity 0.8.24;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IERC1271} from "@openzeppelin/contracts/interfaces/IERC1271.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {IsDIEM} from "./interfaces/IsDIEM.sol";
 import {IDIEMStaking} from "./interfaces/IDIEMStaking.sol";
 
@@ -32,7 +34,7 @@ import {IDIEMStaking} from "./interfaces/IDIEMStaking.sol";
  *   - Emergency pause on stake/claim.
  *   - Operator role separated from admin.
  */
-contract sDIEM is IsDIEM, ReentrancyGuard {
+contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ── Constants ────────────────────────────────────────────────────────
@@ -460,5 +462,30 @@ contract sDIEM is IsDIEM, ReentrancyGuard {
         require(to != address(0), "sDIEM: zero to");
         IERC20(token).safeTransfer(to, amount);
         emit TokenRecovered(token, to, amount);
+    }
+
+    // ── EIP-1271 — Smart contract signature verification ─────────────
+
+    /**
+     * @notice EIP-1271: Validates a signature on behalf of this contract.
+     * @dev Venice uses this to verify the sDIEM contract controls its
+     *      staking address. The admin signs messages off-chain and Venice
+     *      calls isValidSignature() to verify against this contract.
+     *
+     *      Returns the EIP-1271 magic value (0x1626ba7e) if the signature
+     *      was produced by the current admin. Returns 0xffffffff otherwise.
+     *
+     *      Admin rotation via transferAdmin/acceptAdmin automatically
+     *      updates who can sign — no separate signer management needed.
+     */
+    function isValidSignature(
+        bytes32 hash,
+        bytes memory signature
+    ) external view override returns (bytes4) {
+        address recovered = ECDSA.recover(hash, signature);
+        if (recovered == admin) {
+            return bytes4(0x1626ba7e); // EIP-1271 magic value
+        }
+        return bytes4(0xffffffff);
     }
 }

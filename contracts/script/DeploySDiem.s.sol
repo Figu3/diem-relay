@@ -25,10 +25,11 @@ contract DeploySDiem is Script {
     function run() external {
         address diem = vm.envOr("DIEM", address(0xF4d97F2da56e8c3098f3a8D538DB630A2606a024));
         address usdc = vm.envOr("USDC", address(0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913));
-        address admin = vm.envOr("ADMIN", msg.sender);
-        address operator = vm.envAddress("OPERATOR");
-
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+        address deployer = vm.addr(deployerKey);
+
+        address admin = vm.envOr("ADMIN", deployer);
+        address operator = vm.envOr("OPERATOR", deployer);
 
         console.log("Deploying sDIEM...");
         console.log("  diem:    ", diem);
