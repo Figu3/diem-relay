@@ -19,3 +19,4 @@ app/next-env.d.ts
 .env.*
 !.env.example
 !contracts/.env.example
+!app/.env.local.example

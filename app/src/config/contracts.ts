@@ -3,9 +3,9 @@ import { type Address } from "viem";
 export const DIEM_TOKEN = "0xf4d97f2da56e8c3098f3a8d538db630a2606a024" as Address;
 export const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address;
 
-// Fill after deployment — placeholders for now
+// Deployed on Base mainnet — override via NEXT_PUBLIC_SDIEM_ADDRESS env var
 export const SDIEM_ADDRESS = (process.env.NEXT_PUBLIC_SDIEM_ADDRESS ??
-  "0x0000000000000000000000000000000000000000") as Address;
+  "0x6a29f473EAF0e590FAa69A59A5221d99e506173E") as Address;
 export const CSDIEM_ADDRESS = (process.env.NEXT_PUBLIC_CSDIEM_ADDRESS ??
   "0x0000000000000000000000000000000000000000") as Address;
 
