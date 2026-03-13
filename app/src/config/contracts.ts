@@ -5,7 +5,7 @@ export const USDC_BASE = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address
 
 // Deployed on Base mainnet — override via NEXT_PUBLIC_SDIEM_ADDRESS env var
 export const SDIEM_ADDRESS = (process.env.NEXT_PUBLIC_SDIEM_ADDRESS ??
-  "0x9566a919c7A4a7b22243736f39781A2787ddC11e") as Address;
+  "0x59650b79eF4c2eC193B49DbFc23d50d48EBf9f34") as Address;
 export const CSDIEM_ADDRESS = (process.env.NEXT_PUBLIC_CSDIEM_ADDRESS ??
   "0x0000000000000000000000000000000000000000") as Address;
 
