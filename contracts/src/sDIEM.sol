@@ -236,10 +236,8 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
 
         WithdrawalRequest storage req = _withdrawalRequests[msg.sender];
         req.amount += amount;
-        // Only set timer on first request — accumulating doesn't reset delay
-        if (req.requestedAt == 0) {
-            req.requestedAt = block.timestamp;
-        }
+        // Always reset timer — each new request enforces a fresh 24h delay
+        req.requestedAt = block.timestamp;
         totalPendingWithdrawals += amount;
         totalPendingNotInitiated += amount;
         emit WithdrawalRequested(msg.sender, amount);
@@ -363,10 +361,8 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
 
             WithdrawalRequest storage req = _withdrawalRequests[msg.sender];
             req.amount += bal;
-            // Only set timer on first request — accumulating doesn't reset delay
-            if (req.requestedAt == 0) {
-                req.requestedAt = block.timestamp;
-            }
+            // Always reset timer — each new request enforces a fresh 24h delay
+            req.requestedAt = block.timestamp;
             totalPendingWithdrawals += bal;
             totalPendingNotInitiated += bal;
             emit WithdrawalRequested(msg.sender, bal);
@@ -446,8 +442,8 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
             amount = staked;
         }
 
-        // Effects
-        totalPendingNotInitiated = 0;
+        // Effects — only subtract what we actually initiated, not the full tracker
+        totalPendingNotInitiated -= amount;
         if (amount == 0) return;
         emit VeniceUnstakeInitiated(msg.sender, amount);
 

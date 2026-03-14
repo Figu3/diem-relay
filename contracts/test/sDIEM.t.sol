@@ -216,15 +216,15 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.requestWithdraw(30e18);
 
-        // Second request — accumulates amount, preserves original timer
-        uint256 originalRequestedAt = block.timestamp;
+        // Second request — accumulates amount, resets timer (prevents delay bypass)
         vm.warp(block.timestamp + 12 hours);
+        uint256 newRequestedAt = block.timestamp;
         vm.prank(alice);
         staking.requestWithdraw(20e18);
 
         (uint256 amount, uint256 requestedAt) = staking.withdrawalRequests(alice);
         assertEq(amount, 50e18);
-        assertEq(requestedAt, originalRequestedAt); // Timer NOT reset
+        assertEq(requestedAt, newRequestedAt); // Timer RESET to enforce fresh 24h delay
         assertEq(staking.totalPendingWithdrawals(), 50e18);
     }
 
