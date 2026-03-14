@@ -42,6 +42,7 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
     uint256 public constant REWARDS_DURATION = 24 hours;
     uint256 public constant override WITHDRAWAL_DELAY = 24 hours;
     uint256 private constant PRECISION = 1e18;
+    uint256 public constant MIN_WITHDRAW = 1e18; // 1 DIEM minimum withdrawal
 
     // ── Immutables ──────────────────────────────────────────────────────
 
@@ -216,7 +217,8 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
      * @dev Deducts from staker's balance. Auto-initiates Venice unstake
      *      if no cooldown is active, so both timers run in parallel.
      *      Users with existing pending requests accumulate amounts
-     *      and the timer resets.
+     *      without resetting the timer (preserves original delay).
+     *      Minimum withdrawal: 1 DIEM (prevents dust griefing of Venice queue).
      */
     function requestWithdraw(uint256 amount)
         external
@@ -224,7 +226,7 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         nonReentrant
         updateReward(msg.sender)
     {
-        require(amount > 0, "sDIEM: zero amount");
+        require(amount >= MIN_WITHDRAW, "sDIEM: below minimum withdraw");
         require(_balances[msg.sender] >= amount, "sDIEM: insufficient balance");
 
         // Effects
@@ -233,7 +235,10 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
 
         WithdrawalRequest storage req = _withdrawalRequests[msg.sender];
         req.amount += amount;
-        req.requestedAt = block.timestamp;
+        // Only set timer on first request — accumulating doesn't reset delay
+        if (req.requestedAt == 0) {
+            req.requestedAt = block.timestamp;
+        }
         totalPendingWithdrawals += amount;
         totalPendingNotInitiated += amount;
         emit WithdrawalRequested(msg.sender, amount);
@@ -300,6 +305,12 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         req.amount = 0;
         req.requestedAt = 0;
         totalPendingWithdrawals -= amount;
+        // Fix: decrement pending-not-initiated to prevent phantom Venice unstakes
+        if (totalPendingNotInitiated >= amount) {
+            totalPendingNotInitiated -= amount;
+        } else {
+            totalPendingNotInitiated = 0;
+        }
         _balances[msg.sender] += amount;
         totalStaked += amount;
         emit WithdrawalCancelled(msg.sender, amount);
@@ -336,7 +347,10 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
 
             WithdrawalRequest storage req = _withdrawalRequests[msg.sender];
             req.amount += bal;
-            req.requestedAt = block.timestamp;
+            // Only set timer on first request — accumulating doesn't reset delay
+            if (req.requestedAt == 0) {
+                req.requestedAt = block.timestamp;
+            }
             totalPendingWithdrawals += bal;
             totalPendingNotInitiated += bal;
             emit WithdrawalRequested(msg.sender, bal);
@@ -384,7 +398,7 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
      * @dev Claims matured cooldown first (M-01 fix) to prevent re-locking.
      *      Reverts if Venice cooldown is still active or nothing to initiate.
      */
-    function initiateVeniceUnstake() external override nonReentrant {
+    function initiateVeniceUnstake() external override onlyOperator nonReentrant {
         require(totalPendingNotInitiated > 0, "sDIEM: nothing to initiate");
         _tryInitiateVeniceUnstake();
     }
@@ -398,7 +412,7 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         uint256 amount = totalPendingNotInitiated;
         if (amount == 0) return;
 
-        (, uint256 cooldownEnd, uint256 pending) = diemStaking.stakedInfos(address(this));
+        (uint256 staked, uint256 cooldownEnd, uint256 pending) = diemStaking.stakedInfos(address(this));
 
         if (pending > 0) {
             if (block.timestamp >= cooldownEnd) {
@@ -410,8 +424,15 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
             }
         }
 
+        // Cap to what's actually staked to prevent phantom unstakes
+        // (totalPendingNotInitiated can be inflated by cancel/complete flows)
+        if (amount > staked) {
+            amount = staked;
+        }
+
         // Effects
         totalPendingNotInitiated = 0;
+        if (amount == 0) return;
         emit VeniceUnstakeInitiated(msg.sender, amount);
 
         // Interaction

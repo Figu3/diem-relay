@@ -174,8 +174,17 @@ contract sDIEMTest is Test {
         staking.stake(DIEM_AMOUNT);
 
         vm.prank(alice);
-        vm.expectRevert("sDIEM: zero amount");
+        vm.expectRevert("sDIEM: below minimum withdraw");
         staking.requestWithdraw(0);
+    }
+
+    function test_requestWithdraw_revertsBelowMinimum() public {
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: below minimum withdraw");
+        staking.requestWithdraw(1e17); // 0.1 DIEM < 1 DIEM minimum
     }
 
     function test_requestWithdraw_revertsInsufficientBalance() public {
@@ -207,14 +216,15 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.requestWithdraw(30e18);
 
-        // Second request — accumulates amount, resets timer
+        // Second request — accumulates amount, preserves original timer
+        uint256 originalRequestedAt = block.timestamp;
         vm.warp(block.timestamp + 12 hours);
         vm.prank(alice);
         staking.requestWithdraw(20e18);
 
         (uint256 amount, uint256 requestedAt) = staking.withdrawalRequests(alice);
         assertEq(amount, 50e18);
-        assertEq(requestedAt, block.timestamp); // Timer reset
+        assertEq(requestedAt, originalRequestedAt); // Timer NOT reset
         assertEq(staking.totalPendingWithdrawals(), 50e18);
     }
 
@@ -841,6 +851,7 @@ contract sDIEMTest is Test {
         vm.warp(block.timestamp + 24 hours);
 
         // Now initiate the second batch (Bob's) — claims matured first, then initiates
+        vm.prank(operator);
         staking.initiateVeniceUnstake();
 
         // Wait for second cooldown
@@ -860,7 +871,7 @@ contract sDIEMTest is Test {
     // ── Fuzz tests ──────────────────────────────────────────────────────
 
     function testFuzz_requestCompleteWithdraw(uint256 stakeAmount) public {
-        stakeAmount = bound(stakeAmount, 1, 1000e18);
+        stakeAmount = bound(stakeAmount, 1e18, 1000e18); // Min 1 DIEM (MIN_WITHDRAW)
 
         vm.prank(alice);
         staking.stake(stakeAmount);
