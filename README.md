@@ -1,186 +1,174 @@
-# DIEM Relay
+# DIEM Staking
 
-Pay-per-token AI inference relay backed by on-chain USDC deposits, with DIEM token staking for yield.
+Stake DIEM tokens to earn yield from Venice AI compute revenue. All staked DIEM is forward-staked on Venice for compute credits, and revenue flows back to stakers as USDC or compounded DIEM.
+
+Deployed on **Base**. Built with Foundry (Solidity 0.8.24).
 
 ## Architecture
 
 ```
-Borrower deposits USDC --> DIEMVault (on-chain)
-                               | Deposited event
-                          deposit-watcher (relay)
-                               | credits balance in SQLite
-Borrower calls /v1/chat/completions --> Relay --> Venice.ai
-                               | deducts from balance
-```
-
-### Staking (Dual-Mode)
-
-DIEM holders can stake to earn yield from Venice AI compute revenue:
-
-```
-                  ┌─────────────────────────────────────┐
-                  │         Venice AI Revenue            │
-                  │         (USDC from inference)        │
-                  └──────────────┬──────────────────────┘
-                                 │
-                        ┌────────▼─────────┐
-                        │  RevenueSplitter  │
-                        │  (permissionless) │
-                        └───┬──────────┬───┘
-                            │          │
-                    USDC    │          │  USDC → swap → DIEM
-                            │          │
-                    ┌───────▼──────┐  ┌▼──────────────┐
-                    │    sDIEM     │  │    csDIEM      │
-                    │  Earn USDC   │  │  Earn DIEM     │
-                    │  Synthetix   │  │  ERC-4626      │
-                    │  24h stream  │  │  Composable    │
-                    └──────────────┘  └────────────────┘
-```
-
-| Contract | Model | Reward | Composable | Use Case |
-|---|---|---|---|---|
-| **sDIEM** | Synthetix StakingRewards | USDC (streamed over 24h) | No | Direct yield, claim anytime |
-| **csDIEM** | ERC-4626 vault | DIEM (via donation) | Yes | Pendle, Morpho, Silo integration |
-| **RevenueSplitter** | Permissionless splitter | — | — | Splits USDC revenue to sDIEM + csDIEM |
-
-### Venice Forward-Staking
-
-Both sDIEM and csDIEM forward-stake deposited DIEM tokens on Venice to generate compute credits:
-
-```
-User stakes DIEM → sDIEM/csDIEM
-                      │ All DIEM deployed to Venice (DIEM.stake())
-                      │ Liquid DIEM held only for pending withdrawals
-                      │
-                Venice compute credits ($1/day per staked DIEM)
-                      │
-              Revenue → RevenueSplitter → rewards
-              (USDC for sDIEM, DIEM for csDIEM)
-```
-
-- **Permissionless Venice management**: `claimFromVenice()` and `redeployExcess()` callable by anyone
-- **24h async withdrawals**: Users `requestWithdraw()` (auto-initiates Venice unstake) → wait 24h → `completeWithdraw()` (auto-claims from Venice). Cancel anytime with `cancelWithdraw()`
-
-### RevenueSplitter
-
-Receives USDC from Venice compute credit revenue and splits it:
-
-- **sDIEM portion**: USDC transferred to sDIEM + `notifyRewardAmount()` called (starts 24h stream)
-- **csDIEM portion**: USDC swapped to DIEM via Uniswap V3, then `donate()` called on csDIEM (increases share price)
-
-`distribute()` is fully permissionless — anyone can trigger it when the contract holds USDC above the minimum threshold. Split ratio is admin-configurable in basis points.
-
-## Structure
-
-```
-src/              Relay server (TypeScript / Bun / Hono)
-contracts/
-  src/
-    DIEMVault.sol           USDC deposit vault for relay credits
-    sDIEM.sol               Stake DIEM, earn USDC (Synthetix model)
-    csDIEM.sol              Stake DIEM, earn DIEM (ERC-4626, composable)
-    RevenueSplitter.sol     Permissionless USDC revenue distribution
-    interfaces/
-      IDIEMStaking.sol      DIEM token staking interface (Base)
-      IsDIEM.sol            sDIEM interface
-      IcsDIEM.sol           csDIEM interface (extends IERC4626)
-      IRevenueSplitter.sol  RevenueSplitter interface
-      ISwapRouter.sol       Minimal Uniswap V3 router interface
-  test/
-    sDIEM.t.sol             51 unit/fuzz tests (incl. Venice forward-staking)
-    sDIEMInvariant.t.sol    6 invariant tests
-    csDIEM.t.sol            53 unit/fuzz tests (incl. Venice forward-staking)
-    csDIEMInvariant.t.sol   5 invariant tests
-    RevenueSplitter.t.sol   33 unit tests (split, swap, admin, integration)
-    DIEMVault.t.sol         40 unit/fuzz tests
-    DIEMVaultInvariant.t.sol 4 invariant tests
-    mocks/
-      MockDIEMStaking.sol   DIEM token mock with built-in staking
-      MockERC20.sol         Mintable ERC20 with configurable decimals
-      MockSwapRouter.sol    DEX router mock with configurable rate
-app/              Staking UI (Next.js 16 / wagmi / RainbowKit / Tailwind)
-```
-
-## Quick Start
-
-### Relay
-
-```bash
-cp .env.example .env   # fill in VENICE_API_KEY and ADMIN_SECRET
-bun install
-bun run dev            # http://localhost:3100
+                     ┌──────────────────────────────┐
+                     │      Venice AI Compute        │
+                     │   (sold via cheaptokens.ai)   │
+                     └──────────────┬───────────────┘
+                                    │ USDC revenue
+                                    │
+                         notifyRewardAmount()
+                                    │
+                     ┌──────────────▼───────────────┐
+                     │            sDIEM              │
+                     │   Synthetix StakingRewards    │
+                     │   Stake DIEM → earn USDC      │
+                     │   24h linear reward stream    │
+                     └──────────────┬───────────────┘
+                                    │
+                     ┌──────────────▼───────────────┐
+                     │           csDIEM              │
+                     │     ERC-4626 Compounder       │
+                     │  Claims USDC → swaps → DIEM   │
+                     │     Restakes into sDIEM       │
+                     └──────────────────────────────┘
 ```
 
 ### Contracts
+
+| Contract | Description |
+|---|---|
+| **sDIEM** | Synthetix StakingRewards fork. Stake DIEM, earn USDC rewards streamed linearly over 24h. All staked DIEM is forward-staked on Venice for compute credits. 24h async withdrawals matching Venice's unstake cooldown. |
+| **csDIEM** | ERC-4626 auto-compounding vault wrapping sDIEM. Claims USDC rewards, swaps USDC to DIEM via Aerodrome Slipstream CL (with TWAP oracle protection), restakes DIEM into sDIEM. For users who want compounding exposure rather than USDC yield. Compatible with Pendle, Morpho, Silo. |
+| **DIEMVault** | USDC deposit vault for the DIEM Relay service. Borrowers deposit USDC on-chain; an off-chain watcher credits relay accounts. Deposit-only (Phase 1). |
+
+### Revenue Loop
+
+```
+Stake DIEM → sDIEM
+         → forward-staked on Venice ($1/day compute per staked DIEM)
+         → compute sold via cheaptokens.ai
+         → USDC revenue
+         → notifyRewardAmount() on sDIEM
+         → streamed to stakers over 24h
+```
+
+All USDC revenue goes directly to sDIEM. csDIEM users get compounding by harvesting their share of USDC rewards and swapping back to DIEM.
+
+### Venice Forward-Staking
+
+All deposited DIEM is immediately forward-staked on Venice (the DIEM token contract has staking built in). No liquid buffer is held.
+
+- **Permissionless management**: `claimFromVenice()` and `redeployExcess()` callable by anyone.
+- **24h async withdrawals**: `requestWithdraw()` auto-initiates Venice unstake. After 24h, `completeWithdraw()` auto-claims from Venice. Users can `cancelWithdraw()` at any time.
+
+### csDIEM Harvest Flow
+
+The `harvest()` function is permissionless and executes three steps:
+
+1. Claims accrued USDC from sDIEM.
+2. Swaps USDC to DIEM via Aerodrome Slipstream CL pool (TWAP-protected).
+3. Restakes received DIEM into sDIEM.
+
+Share price increases monotonically as harvested DIEM compounds.
+
+## Project Structure
+
+```
+contracts/
+  src/
+    sDIEM.sol               Stake DIEM, earn USDC (Synthetix model)
+    csDIEM.sol              Auto-compounding ERC-4626 vault over sDIEM
+    DIEMVault.sol           USDC deposit vault for relay credits
+    interfaces/
+      IsDIEM.sol            sDIEM interface
+      IcsDIEM.sol           csDIEM interface (extends IERC4626)
+      IDIEMStaking.sol      DIEM token staking interface (Base)
+      IDIEMVault.sol        DIEMVault interface
+      ICLSwapRouter.sol     Aerodrome Slipstream CL router interface
+      ICLPool.sol           Aerodrome Slipstream CL pool interface
+    libraries/
+      OracleLibrary.sol     TWAP oracle consultation
+      TickMath.sol          Tick-to-price math (Uniswap V3)
+      FullMath.sol          512-bit multiplication helpers
+  test/
+    sDIEM.t.sol             66 unit/fuzz tests
+    sDIEMInvariant.t.sol    7 invariant tests
+    csDIEM.t.sol            55 unit/fuzz tests
+    csDIEMInvariant.t.sol   5 invariant tests
+    DIEMVault.t.sol         51 unit/fuzz tests
+    DIEMVaultInvariant.t.sol 3 invariant tests
+    mocks/                  MockDIEMStaking, MockERC20, MockSwapRouter
+  script/
+    DeploySDiem.s.sol       sDIEM deployment
+    DeployCSDiem.s.sol      csDIEM deployment
+    DeployDIEMVault.s.sol   DIEMVault deployment
+src/                        Relay server (TypeScript / Bun / Hono)
+app/                        Staking UI (Next.js / wagmi / RainbowKit)
+```
+
+## Build and Test
 
 ```bash
 cd contracts
 forge install
 forge build
-forge test             # 242 tests (unit, fuzz, invariant)
+forge test            # 187 tests (unit, fuzz, invariant)
 ```
 
-### Deploy
+## Deployment
 
-**DIEMVault (Sepolia testnet)**:
-```bash
-cd contracts
-forge script script/DeployMockUSDC.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast
-forge script script/DeployDIEMVault.s.sol --rpc-url $SEPOLIA_RPC_URL --broadcast --verify
-```
+All contracts are deployed on **Base** (chain ID 8453).
 
-**sDIEM (Base)**:
-```bash
-cd contracts
-OPERATOR=0x... forge script script/DeploySDiem.s.sol --rpc-url $BASE_RPC_URL --broadcast --verify
-```
-
-**csDIEM (Base)**:
-```bash
-cd contracts
-OPERATOR=0x... forge script script/DeployCSDiem.s.sol --rpc-url $BASE_RPC_URL --broadcast --verify
-```
-
-## Scripts
-
-| Command | Description |
+| Contract | Address |
 |---|---|
-| `bun run dev` | Start relay in watch mode |
-| `bun run watcher` | Start deposit event watcher |
-| `bun run operator` | Permissionless keeper bot (Venice + revenue distribution) |
-| `bun run admin` | Admin CLI |
-| `bun run borrower` | Borrower CLI |
-| `bun run test:e2e` | E2E relay tests |
-| `bun run test:contracts` | Foundry tests |
+| **DIEMVault** | `0xdc9625b026f6Dd17F9d96e608592A9C592e27eEF` |
+| **sDIEM** | `0x9566a919c7A4a7b22243736f39781A2787ddC11e` (bricked -- pending redeployment) |
+
+Deploy scripts:
+
+```bash
+cd contracts
+
+# sDIEM
+OPERATOR=0x... forge script script/DeploySDiem.s.sol \
+  --rpc-url $BASE_RPC_URL --broadcast --verify
+
+# csDIEM
+OPERATOR=0x... forge script script/DeployCSDiem.s.sol \
+  --rpc-url $BASE_RPC_URL --broadcast --verify
+
+# DIEMVault
+forge script script/DeployDIEMVault.s.sol \
+  --rpc-url $BASE_RPC_URL --broadcast --verify
+```
 
 ## Security
 
-- **Static analysis**: Slither clean on all contracts (zero High/Medium/Critical)
-- **Test coverage**: 242 tests across 8 suites including invariant + fuzz testing
-- **Permissionless design**: Venice management and revenue distribution require no special roles — anyone can call
-- **Pause design**: Deposits/staking gated behind pause; withdrawals and reward claims always allowed (even when paused)
-- **csDIEM**: Two-step admin transfer, ERC-4626 virtual share offset (1e6) for inflation attack protection
-- **sDIEM**: Two-step admin transfer, CEI pattern, SafeERC20 throughout
-- **RevenueSplitter**: ReentrancyGuard, two-step admin transfer, max slippage cap (10%), min distribution threshold, token recovery (non-USDC)
-- **Audited** by [Bretzel](https://github.com/bretzke) (March 2026) — 0 Critical, 0 High, 1 Medium, 1 Low, 4 Informational. All findings remediated.
+**Access control**: Two-step admin transfer on sDIEM and csDIEM. Separate operator role on sDIEM for reward notification.
 
-### Audit Remediations (v2)
+**Emergency pause**: Deposits and staking gated behind pause. Withdrawals and reward claims always allowed, even when paused -- users can always exit.
 
-| Finding | Severity | Fix |
-|---|---|---|
-| M-01: Venice cooldown reset DoS | Medium | Claim-first semantics in `initiateVeniceUnstake()` — claims matured cooldown before initiating new one |
-| L-01: Reward dust stuck forever | Low | `notifyRewardAmount()` returns rounding dust to caller |
-| I-01: DIEMVault missing safety functions | Info | Added `nonReentrant` to `withdrawProtocolFees()`, added `recoverERC20()` |
+**Reentrancy**: ReentrancyGuard on all mutative functions across all contracts. CEI (Checks-Effects-Interactions) pattern throughout.
 
-### UX Improvements (v2)
+**Token safety**: SafeERC20 for all ERC-20 operations. Zero-address checks on all constructors and admin setters.
 
-| Change | Before | After |
-|---|---|---|
-| Withdrawal flow | 4 manual transactions | 2 transactions: `requestWithdraw()` + `completeWithdraw()` |
-| Venice initiation | Manual `initiateVeniceUnstake()` | Auto-initiated on `requestWithdraw()`/`requestRedeem()` |
-| Venice claim | Manual `claimFromVenice()` | Auto-claimed on `completeWithdraw()`/`completeRedeem()` |
-| Cancel withdrawal | Not possible | `cancelWithdraw()` / `cancelRedeem()` re-stakes DIEM |
-| Check readiness | Simulate tx | `canCompleteWithdraw(addr)` / `canCompleteRedeem(addr)` view |
-| Pause behavior | Blocked exit + claim | Only deposits blocked; exit and claim always allowed |
-| Reward seeding | 2 txs (transfer + notify) | 1 tx (`notifyRewardAmount` pulls via `transferFrom`) |
+**csDIEM swap protection**:
+- TWAP oracle (minimum 5-minute window) for fair price reference on USDC-to-DIEM swaps.
+- Configurable slippage tolerance (max 10% hard cap).
+- Absolute DIEM-per-USDC price floor circuit breaker.
+- ERC-4626 virtual share offset (1e6) for inflation attack mitigation.
+
+**Token recovery**: `recoverERC20()` on all contracts for accidentally sent tokens, with safeguards preventing recovery of core assets (DIEM, USDC).
+
+**Venice cooldown handling**: Claim-first semantics in `initiateVeniceUnstake()` -- claims matured cooldown before initiating new one, preventing cooldown reset DoS (audit finding M-01).
+
+**Reward dust**: `notifyRewardAmount()` returns integer division rounding dust to caller instead of stranding it in the contract (audit finding L-01).
+
+### Audit
+
+Audited by Bretzel (March 2026). 0 Critical, 0 High, 1 Medium, 1 Low, 4 Informational. All findings remediated.
+
+### Test Coverage
+
+187 tests across 6 suites: unit, fuzz, and invariant testing. Key invariants verified:
+- Sum of staker balances equals `totalStaked`.
+- Sum of borrower balances equals `totalDeposits`.
+- csDIEM `totalAssets` accounts for all DIEM positions (staked + pending + liquid - owed).
+- Share price never decreases (absent slashing).
