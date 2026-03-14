@@ -168,6 +168,7 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
     }
 
     /// @inheritdoc IsDIEM
+    /// @dev Returns true if ANY amount can be paid out (partial withdrawal support).
     function canCompleteWithdraw(address account) external view override returns (bool) {
         WithdrawalRequest storage req = _withdrawalRequests[account];
         if (req.amount == 0) return false;
@@ -178,7 +179,7 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         if (pending > 0 && block.timestamp >= cooldownEnd) {
             liquid += pending; // Would be claimed automatically
         }
-        return liquid >= req.amount;
+        return liquid > 0;
     }
 
     /// @inheritdoc IsDIEM
@@ -248,9 +249,13 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
     }
 
     /**
-     * @notice Complete withdrawal after 24h delay.
-     * @dev Auto-claims from Venice if cooldown has matured but hasn't
-     *      been claimed yet. Only reverts if Venice cooldown is still active.
+     * @notice Complete withdrawal after 24h delay. Supports partial payouts.
+     * @dev Auto-claims from Venice if cooldown has matured. Transfers whatever
+     *      liquid DIEM is available (up to the requested amount). If the full
+     *      amount isn't available, the remainder stays in the request and
+     *      Venice unstake is auto-initiated for the next batch.
+     *      This prevents one user's unfunded withdrawal from blocking others
+     *      (critical for csDIEM which shares a single withdrawal slot).
      */
     function completeWithdraw()
         external
@@ -268,22 +273,33 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         // Auto-claim from Venice if matured but not yet claimed
         uint256 liquid = diem.balanceOf(address(this));
         if (liquid < amount) {
-            (,, uint256 pending) = diemStaking.stakedInfos(address(this));
-            if (pending > 0) {
+            (, uint256 cooldownEnd, uint256 pending) = diemStaking.stakedInfos(address(this));
+            if (pending > 0 && block.timestamp >= cooldownEnd) {
                 diemStaking.unstake();
                 liquid = diem.balanceOf(address(this));
             }
         }
-        require(liquid >= amount, "sDIEM: Venice cooldown not finished");
+
+        // Partial payout: transfer what's available
+        uint256 payout = liquid >= amount ? amount : liquid;
+        require(payout > 0, "sDIEM: nothing claimable yet");
 
         // Effects
-        req.amount = 0;
-        req.requestedAt = 0;
-        totalPendingWithdrawals -= amount;
-        emit WithdrawalCompleted(msg.sender, amount);
+        req.amount -= payout;
+        if (req.amount == 0) {
+            req.requestedAt = 0;
+        }
+        totalPendingWithdrawals -= payout;
+        emit WithdrawalCompleted(msg.sender, payout);
 
-        // Interaction
-        diem.safeTransfer(msg.sender, amount);
+        // Interaction — transfer available DIEM
+        diem.safeTransfer(msg.sender, payout);
+
+        // Auto-initiate Venice unstake for any pending uninitiated amounts.
+        // This covers both this user's partial remainder AND other users'
+        // amounts that couldn't be initiated when Venice cooldown was active.
+        // _tryInitiateVeniceUnstake returns early if nothing to initiate.
+        _tryInitiateVeniceUnstake();
     }
 
     /**

@@ -319,22 +319,20 @@ contract sDIEMTest is Test {
         staking.completeWithdraw();
     }
 
-    function test_completeWithdraw_revertsVeniceCooldownNotFinished() public {
-        // Scenario: two sequential requests where the second resets Venice cooldown.
-        // Personal delay is met but Venice cooldown is still active.
+    function test_completeWithdraw_partialPayout() public {
+        // Scenario: two sequential requests where only the first batch was Venice-unstaked.
+        // completeWithdraw pays out the available portion and auto-initiates the rest.
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
         // First request at t=0 — auto-initiates Venice (cooldownEnd = t+24h)
         vm.prank(alice);
-        staking.requestWithdraw(DIEM_AMOUNT / 2);
+        staking.requestWithdraw(DIEM_AMOUNT / 2); // 50 DIEM
 
         // Warp 23h — first request's Venice cooldown almost done
         vm.warp(block.timestamp + 23 hours);
 
-        // Stake more and request again — this accumulates but the Venice cooldown
-        // from the first initiation is still active (1h left), so _tryInitiateVeniceUnstake
-        // silently returns. The new amount stays in totalPendingNotInitiated.
+        // Stake more and request again — Venice cooldown still active (1h left)
         diemToken.mint(alice, DIEM_AMOUNT);
         vm.startPrank(alice);
         diemToken.approve(address(staking), DIEM_AMOUNT);
@@ -342,19 +340,50 @@ contract sDIEMTest is Test {
         vm.stopPrank();
 
         vm.prank(alice);
-        staking.requestWithdraw(DIEM_AMOUNT / 2);
-        // Personal timer reset to t+23h, so personal delay met at t+47h
+        staking.requestWithdraw(DIEM_AMOUNT / 2); // +50 DIEM, total pending = 100
 
-        // Warp 24h (to t+47h) — personal delay met for the accumulated request
+        // Warp 24h (to t+47h) — personal delay met for accumulated request
         vm.warp(block.timestamp + 24 hours);
 
-        // At t+47h: Venice cooldown from first initiation ended at t+24h (matured).
-        // completeWithdraw auto-claims the first batch (50 DIEM).
-        // But total pending is 100 DIEM and only 50 was initiated on Venice.
-        // The second 50 was never initiated (cooldown was active at t+23h).
-        // So liquid after auto-claim = 50, but need 100. Reverts.
+        // First batch (50 DIEM) matured on Venice. Second batch (50) not yet initiated.
+        // Partial payout: gives 50, keeps remaining 50 in request.
+        uint256 balBefore = diemToken.balanceOf(alice);
         vm.prank(alice);
-        vm.expectRevert("sDIEM: Venice cooldown not finished");
+        staking.completeWithdraw();
+
+        assertEq(diemToken.balanceOf(alice), balBefore + DIEM_AMOUNT / 2);
+        (uint256 remaining,) = staking.withdrawalRequests(alice);
+        assertEq(remaining, DIEM_AMOUNT / 2); // 50 DIEM still pending
+        assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT / 2);
+
+        // Auto-initiated Venice unstake for remaining 50 during partial completion.
+        // Wait for that cooldown, then complete the rest.
+        vm.warp(block.timestamp + 24 hours);
+        vm.prank(alice);
+        staking.completeWithdraw();
+
+        assertEq(diemToken.balanceOf(alice), balBefore + DIEM_AMOUNT);
+        (remaining,) = staking.withdrawalRequests(alice);
+        assertEq(remaining, 0);
+        assertEq(staking.totalPendingWithdrawals(), 0);
+    }
+
+    function test_completeWithdraw_revertsNothingClaimable() public {
+        // Venice cooldown longer than personal delay → nothing claimable yet.
+        // Set Venice cooldown to 48h BEFORE staking so it takes effect.
+        diemToken.setCooldownDuration(48 hours);
+
+        vm.prank(alice);
+        staking.stake(DIEM_AMOUNT);
+
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT);
+
+        // Warp 24h: personal delay met, Venice cooldown NOT met (24h remaining)
+        vm.warp(block.timestamp + 24 hours);
+
+        vm.prank(alice);
+        vm.expectRevert("sDIEM: nothing claimable yet");
         staking.completeWithdraw();
     }
 
@@ -828,44 +857,51 @@ contract sDIEMTest is Test {
         assertGt(usdcToken.balanceOf(alice), usdcBefore);
     }
 
-    function test_multiUserAsyncWithdrawal() public {
-        // Alice and Bob both stake
+    function test_multiUserAsyncWithdrawal_autoInitiateOnComplete() public {
+        // Alice and Bob both stake and request withdrawal.
+        // Only Alice's batch gets Venice-unstaked (Bob's is blocked by cooldown).
+        // When Alice completes, it auto-initiates Venice unstake for Bob.
+        // Bob can then complete 24h later — no operator intervention needed.
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
         vm.prank(bob);
         staking.stake(DIEM_AMOUNT);
 
-        // Both request withdrawal (first auto-initiates Venice, second may not if cooldown active)
+        // Both request withdrawal
         vm.prank(alice);
-        staking.requestWithdraw(DIEM_AMOUNT);
-        // Alice's request auto-initiated Venice unstake for 100 DIEM
+        staking.requestWithdraw(DIEM_AMOUNT); // Auto-initiates Venice unstake for 100 DIEM
 
         vm.prank(bob);
-        staking.requestWithdraw(DIEM_AMOUNT);
-        // Bob's request: Venice cooldown is active (just started), so _tryInitiateVeniceUnstake
-        // silently returns. Bob's 100 DIEM stays in totalPendingNotInitiated.
+        staking.requestWithdraw(DIEM_AMOUNT); // Venice cooldown active → stays in totalPendingNotInitiated
 
         assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT * 2);
+        assertEq(staking.totalPendingNotInitiated(), DIEM_AMOUNT); // Bob's uninitiated
 
         // Wait for first cooldown to mature
         vm.warp(block.timestamp + 24 hours);
 
-        // Now initiate the second batch (Bob's) — claims matured first, then initiates
-        vm.prank(operator);
-        staking.initiateVeniceUnstake();
-
-        // Wait for second cooldown
-        vm.warp(block.timestamp + 24 hours);
-
-        // Both complete (auto-claims from Venice)
+        // Alice completes — gets full 100 DIEM (first Venice batch covers her request).
+        // After completion, auto-initiates Venice unstake for Bob's 100 DIEM.
+        uint256 aliceBefore = diemToken.balanceOf(alice);
         vm.prank(alice);
         staking.completeWithdraw();
+
+        assertEq(diemToken.balanceOf(alice), aliceBefore + DIEM_AMOUNT);
+        (uint256 aliceRemaining,) = staking.withdrawalRequests(alice);
+        assertEq(aliceRemaining, 0);
+        assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT); // Bob's 100
+        assertEq(staking.totalPendingNotInitiated(), 0); // Auto-initiated for Bob
+
+        // Wait for second Venice cooldown
+        vm.warp(block.timestamp + 24 hours);
+
+        // Bob completes — no operator intervention needed
+        uint256 bobBefore = diemToken.balanceOf(bob);
         vm.prank(bob);
         staking.completeWithdraw();
 
+        assertEq(diemToken.balanceOf(bob), bobBefore + DIEM_AMOUNT);
         assertEq(staking.totalPendingWithdrawals(), 0);
-        assertEq(diemToken.balanceOf(alice), 1000e18); // full balance restored
-        assertEq(diemToken.balanceOf(bob), 1000e18);
     }
 
     // ── Fuzz tests ──────────────────────────────────────────────────────
