@@ -57,6 +57,8 @@ All deposited DIEM is immediately forward-staked on Venice (the DIEM token contr
 
 - **Permissionless management**: `claimFromVenice()` and `redeployExcess()` callable by anyone.
 - **24h async withdrawals**: `requestWithdraw()` auto-initiates Venice unstake. After 24h, `completeWithdraw()` auto-claims from Venice. Users can `cancelWithdraw()` at any time.
+- **Partial withdrawals**: `completeWithdraw()` supports partial payouts when only some Venice-unstaked DIEM is available, preventing one user's unfunded batch from blocking others. After partial completion, Venice unstake is auto-initiated for remaining amounts.
+- **Batched unstaking**: Withdrawal requests that arrive during an active Venice cooldown are batched via `totalPendingNotInitiated`. When the cooldown matures and a user completes, the next batch is auto-initiated. Worst-case withdrawal time: ~48h (two Venice cooldowns).
 
 ### csDIEM Harvest Flow
 
@@ -88,13 +90,13 @@ contracts/
       TickMath.sol          Tick-to-price math (Uniswap V3)
       FullMath.sol          512-bit multiplication helpers
   test/
-    sDIEM.t.sol             66 unit/fuzz tests
+    sDIEM.t.sol             67 unit/fuzz tests
     sDIEMInvariant.t.sol    7 invariant tests
-    csDIEM.t.sol            55 unit/fuzz tests
+    csDIEM.t.sol            56 unit/fuzz tests
     csDIEMInvariant.t.sol   5 invariant tests
     DIEMVault.t.sol         51 unit/fuzz tests
     DIEMVaultInvariant.t.sol 3 invariant tests
-    mocks/                  MockDIEMStaking, MockERC20, MockSwapRouter
+    mocks/                  MockDIEMStaking, MockERC20, MockSwapRouter, MockCLPool
   script/
     DeploySDiem.s.sol       sDIEM deployment
     DeployCSDiem.s.sol      csDIEM deployment
@@ -109,7 +111,7 @@ app/                        Staking UI (Next.js / wagmi / RainbowKit)
 cd contracts
 forge install
 forge build
-forge test            # 187 tests (unit, fuzz, invariant)
+forge test            # 189 tests (unit, fuzz, invariant)
 ```
 
 ## Deployment
@@ -159,15 +161,21 @@ forge script script/DeployDIEMVault.s.sol \
 
 **Venice cooldown handling**: Claim-first semantics in `initiateVeniceUnstake()` -- claims matured cooldown before initiating new one, preventing cooldown reset DoS (audit finding M-01).
 
+**Partial withdrawal support**: `completeWithdraw()` pays out available liquid DIEM rather than reverting when full amount isn't funded. Auto-initiates next Venice unstake batch after partial completion.
+
+**Timer reset on accumulation**: Every new `requestWithdraw`/`requestRedeem` resets the 24h timer, preventing delay bypass via stale timer inheritance (Pashov deep audit finding #2).
+
 **Reward dust**: `notifyRewardAmount()` returns integer division rounding dust to caller instead of stranding it in the contract (audit finding L-01).
 
 ### Audit
 
 Audited by Bretzel (March 2026). 0 Critical, 0 High, 1 Medium, 1 Low, 4 Informational. All findings remediated.
 
+Pashov AI deep audit (March 2026). 2 Critical findings remediated: `totalPendingNotInitiated` accounting fix, withdrawal timer bypass fix.
+
 ### Test Coverage
 
-187 tests across 6 suites: unit, fuzz, and invariant testing. Key invariants verified:
+189 tests across 6 suites: unit, fuzz, and invariant testing. Key invariants verified:
 - Sum of staker balances equals `totalStaked`.
 - Sum of borrower balances equals `totalDeposits`.
 - csDIEM `totalAssets` accounts for all DIEM positions (staked + pending + liquid - owed).
