@@ -52,15 +52,16 @@ contract DIEMVaultTest is Test {
      *      withdrawal.
      *
      *      Storage layout of DIEMVault (OZ v5 ReentrancyGuard uses transient storage):
-     *        slot 0: admin (address, 20 bytes) + paused (bool, 1 byte) — packed
-     *        slot 1: minDeposit (uint256)
-     *        slot 2: feeBps (uint256)
-     *        slot 3: totalDeposits (uint256)
-     *        slot 4: protocolFees (uint256)
-     *        slot 5: borrowerBalance mapping
+     *        slot 0: admin (address, 20 bytes)
+     *        slot 1: pendingAdmin (address, 20 bytes) + paused (bool, 1 byte) — packed
+     *        slot 2: minDeposit (uint256)
+     *        slot 3: feeBps (uint256)
+     *        slot 4: totalDeposits (uint256)
+     *        slot 5: protocolFees (uint256)
+     *        slot 6: borrowerBalance mapping
      */
     function _setProtocolFees(uint256 amount) internal {
-        vm.store(address(vault), bytes32(uint256(4)), bytes32(amount));
+        vm.store(address(vault), bytes32(uint256(5)), bytes32(amount));
     }
 
     // ── Constructor ─────────────────────────────────────────────────────
@@ -422,46 +423,71 @@ contract DIEMVaultTest is Test {
         assertEq(vault.minDeposit(), 0);
     }
 
-    // ── Admin: setAdmin ─────────────────────────────────────────────────
+    // ── Admin: transferAdmin / acceptAdmin (two-step) ─────────────────────
 
-    function test_setAdmin_basic() public {
+    function test_transferAdmin_basic() public {
         vm.prank(admin);
-        vault.setAdmin(alice);
+        vault.transferAdmin(alice);
+        assertEq(vault.pendingAdmin(), alice);
+        // Admin hasn't changed yet
+        assertEq(vault.admin(), admin);
+
+        vm.prank(alice);
+        vault.acceptAdmin();
         assertEq(vault.admin(), alice);
     }
 
-    function test_setAdmin_emitsEvent() public {
+    function test_transferAdmin_emitsEvent() public {
+        vm.expectEmit(true, true, false, false);
+        emit IDIEMVault.AdminTransferStarted(admin, alice);
+
+        vm.prank(admin);
+        vault.transferAdmin(alice);
+
         vm.expectEmit(true, true, false, false);
         emit IDIEMVault.AdminChanged(admin, alice);
 
-        vm.prank(admin);
-        vault.setAdmin(alice);
+        vm.prank(alice);
+        vault.acceptAdmin();
     }
 
-    function test_setAdmin_revertsNotAdmin() public {
+    function test_transferAdmin_revertsNotAdmin() public {
         vm.prank(alice);
         vm.expectRevert("DIEMVault: not admin");
-        vault.setAdmin(alice);
+        vault.transferAdmin(alice);
     }
 
-    function test_setAdmin_revertsZeroAddress() public {
+    function test_transferAdmin_revertsZeroAddress() public {
         vm.prank(admin);
         vm.expectRevert("DIEMVault: zero admin");
-        vault.setAdmin(address(0));
+        vault.transferAdmin(address(0));
     }
 
-    function test_setAdmin_oldAdminLosesAccess() public {
+    function test_acceptAdmin_revertsNotPending() public {
         vm.prank(admin);
-        vault.setAdmin(alice);
+        vault.transferAdmin(alice);
+
+        vm.prank(bob);
+        vm.expectRevert("DIEMVault: not pending admin");
+        vault.acceptAdmin();
+    }
+
+    function test_transferAdmin_oldAdminLosesAccess() public {
+        vm.prank(admin);
+        vault.transferAdmin(alice);
+        vm.prank(alice);
+        vault.acceptAdmin();
 
         vm.prank(admin);
         vm.expectRevert("DIEMVault: not admin");
         vault.pause();
     }
 
-    function test_setAdmin_newAdminHasAccess() public {
+    function test_transferAdmin_newAdminHasAccess() public {
         vm.prank(admin);
-        vault.setAdmin(alice);
+        vault.transferAdmin(alice);
+        vm.prank(alice);
+        vault.acceptAdmin();
 
         vm.prank(alice);
         vault.pause();

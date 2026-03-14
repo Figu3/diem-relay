@@ -104,6 +104,10 @@ interface IsDIEM {
     /// @notice Claim accrued USDC rewards.
     function claimReward() external;
 
+    /// @notice Claim accrued USDC rewards to an alternate address.
+    /// @dev Allows USDC-blacklisted stakers to redirect rewards.
+    function claimRewardTo(address to) external;
+
     /// @notice Request full withdrawal + claim rewards in one tx.
     function exit() external;
 

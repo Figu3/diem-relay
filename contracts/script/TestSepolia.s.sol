@@ -161,20 +161,26 @@ contract TestSepolia is Script {
             "16: withdraw exceeds fees reverts"
         );
 
-        // === 17: setAdmin(address(0)) reverts ===
+        // === 17: transferAdmin(address(0)) reverts ===
         _assertReverts(
             address(vault),
-            abi.encodeWithSelector(DIEMVault.setAdmin.selector, address(0)),
-            "17: setAdmin(0) reverts"
+            abi.encodeWithSelector(DIEMVault.transferAdmin.selector, address(0)),
+            "17: transferAdmin(0) reverts"
         );
 
         vm.startBroadcast(deployerKey);
 
-        // === 18: setAdmin transfer ===
-        vault.setAdmin(address(0xBEEF));
-        _assertAddr(vault.admin(), address(0xBEEF), "18: admin transferred to 0xBEEF");
+        // === 18: two-step admin transfer ===
+        vault.transferAdmin(address(0xBEEF));
 
         vm.stopBroadcast();
+
+        // Accept as 0xBEEF
+        vm.startBroadcast(uint256(uint160(address(0xBEEF))));
+        vault.acceptAdmin();
+        vm.stopBroadcast();
+
+        _assertAddr(vault.admin(), address(0xBEEF), "18: admin transferred to 0xBEEF");
 
         // === 19: Old admin cannot act ===
         _assertReverts(

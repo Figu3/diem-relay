@@ -18,6 +18,7 @@ interface IDIEMVault {
     event Deposited(address indexed borrower, uint256 amount, uint256 fee, uint256 newBalance);
     event ProtocolFeesWithdrawn(address indexed to, uint256 amount);
     event AdminChanged(address indexed oldAdmin, address indexed newAdmin);
+    event AdminTransferStarted(address indexed currentAdmin, address indexed pendingAdmin);
     event MinDepositChanged(uint256 oldMin, uint256 newMin);
     event FeeBpsChanged(uint256 oldBps, uint256 newBps);
     event Paused(address indexed by);
@@ -46,6 +47,7 @@ interface IDIEMVault {
     function unpause() external;
     function setMinDeposit(uint256 newMin) external;
     function setFeeBps(uint256 newFeeBps) external;
-    function setAdmin(address newAdmin) external;
+    function transferAdmin(address newAdmin) external;
+    function acceptAdmin() external;
     function recoverERC20(address token, address to, uint256 amount) external;
 }

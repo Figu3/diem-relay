@@ -41,6 +41,7 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
     // ── State ───────────────────────────────────────────────────────────
 
     address public override admin;
+    address public pendingAdmin;
     bool public override paused;
     uint256 public override minDeposit;
     uint256 public override feeBps;
@@ -156,12 +157,20 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
         emit TokenRecovered(token, to, amount);
     }
 
-    /// @notice Transfer admin role to a new address.
+    /// @notice Start two-step admin transfer.
     /// @param newAdmin The new admin address (must not be zero).
-    function setAdmin(address newAdmin) external override onlyAdmin {
+    function transferAdmin(address newAdmin) external onlyAdmin {
         require(newAdmin != address(0), "DIEMVault: zero admin");
+        pendingAdmin = newAdmin;
+        emit AdminTransferStarted(admin, newAdmin);
+    }
+
+    /// @notice Pending admin accepts the role, completing the two-step transfer.
+    function acceptAdmin() external {
+        require(msg.sender == pendingAdmin, "DIEMVault: not pending admin");
         address oldAdmin = admin;
-        admin = newAdmin;
-        emit AdminChanged(oldAdmin, newAdmin);
+        admin = msg.sender;
+        pendingAdmin = address(0);
+        emit AdminChanged(oldAdmin, msg.sender);
     }
 }

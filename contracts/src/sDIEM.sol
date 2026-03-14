@@ -217,8 +217,8 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
      * @notice Request withdrawal. Starts 24h delay.
      * @dev Deducts from staker's balance. Auto-initiates Venice unstake
      *      if no cooldown is active, so both timers run in parallel.
-     *      Users with existing pending requests accumulate amounts
-     *      without resetting the timer (preserves original delay).
+     *      Always resets the 24h timer on each new request, even if
+     *      an existing request is pending (fresh delay enforced).
      *      Minimum withdrawal: 1 DIEM (prevents dust griefing of Venice queue).
      */
     function requestWithdraw(uint256 amount)
@@ -319,11 +319,17 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         req.amount = 0;
         req.requestedAt = 0;
         totalPendingWithdrawals -= amount;
-        // Fix: decrement pending-not-initiated to prevent phantom Venice unstakes
-        if (totalPendingNotInitiated >= amount) {
-            totalPendingNotInitiated -= amount;
-        } else {
-            totalPendingNotInitiated = 0;
+        // Only decrement totalPendingNotInitiated by what hasn't been initiated yet.
+        // The remainder was already initiated on Venice and will complete normally;
+        // excess DIEM will be redeployed via redeployExcess().
+        uint256 notInitiatedDeduction = amount > totalPendingNotInitiated ? totalPendingNotInitiated : amount;
+        totalPendingNotInitiated -= notInitiatedDeduction;
+        // Reconcile tracker against Venice reality to prevent phantom inflation
+        // from cancel→re-request cycles (where _tryInitiateVeniceUnstake caps to
+        // staked=0 but totalPendingNotInitiated keeps incrementing).
+        (uint256 veniceStaked,,) = diemStaking.stakedInfos(address(this));
+        if (totalPendingNotInitiated > veniceStaked) {
+            totalPendingNotInitiated = veniceStaked;
         }
         _balances[msg.sender] += amount;
         totalStaked += amount;
@@ -382,8 +388,34 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
             rewards[user] = 0;
             emit RewardPaid(user, reward);
 
-            // Interaction
-            usdc.safeTransfer(user, reward);
+            // Interaction — use low-level call to handle USDC blacklisted recipients.
+            // If transfer fails (e.g. blacklisted), restore rewards so user can try
+            // claimRewardTo() with an alternate recipient address.
+            (bool ok,) = address(usdc).call(
+                abi.encodeCall(IERC20.transfer, (user, reward))
+            );
+            if (!ok) {
+                rewards[user] = reward;
+            }
+        }
+    }
+
+    /**
+     * @notice Claim accrued USDC rewards to an alternate address.
+     * @dev Allows USDC-blacklisted stakers to redirect rewards elsewhere.
+     * @param to The recipient address for the rewards.
+     */
+    function claimRewardTo(address to)
+        external
+        nonReentrant
+        updateReward(msg.sender)
+    {
+        require(to != address(0), "sDIEM: zero to");
+        uint256 reward = rewards[msg.sender];
+        if (reward > 0) {
+            rewards[msg.sender] = 0;
+            emit RewardPaid(msg.sender, reward);
+            usdc.safeTransfer(to, reward);
         }
     }
 
@@ -398,11 +430,12 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         (,, uint256 pending) = diemStaking.stakedInfos(address(this));
         require(pending > 0, "sDIEM: nothing pending on Venice");
 
-        // Effects — event before external call
-        emit VeniceClaimed(msg.sender, pending);
-
-        // Interaction
+        // Interaction — measure actual balance delta
+        uint256 balBefore = diem.balanceOf(address(this));
         diemStaking.unstake();
+        uint256 received = diem.balanceOf(address(this)) - balBefore;
+
+        emit VeniceClaimed(msg.sender, received);
     }
 
     /**
@@ -410,7 +443,7 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
      * @dev Claims matured cooldown first (M-01 fix) to prevent re-locking.
      *      Reverts if Venice cooldown is still active or nothing to initiate.
      */
-    function initiateVeniceUnstake() external override onlyOperator nonReentrant {
+    function initiateVeniceUnstake() external override nonReentrant {
         require(totalPendingNotInitiated > 0, "sDIEM: nothing to initiate");
         _tryInitiateVeniceUnstake();
     }
@@ -499,16 +532,18 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         rewardRate = total / REWARDS_DURATION;
         require(rewardRate > 0, "sDIEM: reward rate zero");
 
+        // Sanity: contract must hold enough USDC to pay out (checked BEFORE dust
+        // refund so it catches under-funded calls — after dust removal the check
+        // would be tautological).
+        uint256 balance = usdc.balanceOf(address(this));
+        require(rewardRate <= balance / REWARDS_DURATION, "sDIEM: reward too high");
+
         // L-01 fix: return rounding dust to caller
         uint256 distributable = rewardRate * REWARDS_DURATION;
         uint256 dust = total - distributable;
         if (dust > 0) {
             usdc.safeTransfer(msg.sender, dust);
         }
-
-        // Sanity: contract must hold enough USDC to pay out
-        uint256 balance = usdc.balanceOf(address(this));
-        require(rewardRate <= balance / REWARDS_DURATION, "sDIEM: reward too high");
 
         lastUpdateTime = block.timestamp;
         periodFinish = block.timestamp + REWARDS_DURATION;

@@ -18,10 +18,10 @@ import {DIEMVault} from "../src/DIEMVault.sol";
  */
 contract DeployDIEMVault is Script {
     function run() external {
-        address depositToken = vm.envAddress("DEPOSIT_TOKEN");
-        address admin = vm.envOr("ADMIN", msg.sender);
-
         uint256 deployerKey = vm.envUint("PRIVATE_KEY");
+        address deployer = vm.addr(deployerKey);
+        address depositToken = vm.envAddress("DEPOSIT_TOKEN");
+        address admin = vm.envOr("ADMIN", deployer);
 
         console.log("Deploying DIEMVault...");
         console.log("  depositToken:", depositToken);
