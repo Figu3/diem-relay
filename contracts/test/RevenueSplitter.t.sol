@@ -158,8 +158,8 @@ contract RevenueSplitterTest is Test {
         vm.prank(bob); // Anyone can call
         splitter.distribute();
 
-        // sDIEM should have received 500 USDC
-        assertEq(usdcToken.balanceOf(address(sdiem)), sdiemUsdcBefore + 500e6);
+        // sDIEM should have received ~500 USDC (minus Synthetix rounding dust)
+        assertApproxEqAbs(usdcToken.balanceOf(address(sdiem)), sdiemUsdcBefore + 500e6, 86400);
 
         // csDIEM should have received DIEM donation (500 USDC → 500 DIEM at 1:1 rate)
         // The donated DIEM is forwarded to Venice by csDIEM.donate()
@@ -174,8 +174,9 @@ contract RevenueSplitterTest is Test {
         vm.prank(bob);
         splitter.distribute(1000e6); // Only distribute half
 
-        assertEq(usdcToken.balanceOf(address(sdiem)), sdiemUsdcBefore + 500e6);
-        assertEq(usdcToken.balanceOf(address(splitter)), 1000e6); // Remaining
+        assertApproxEqAbs(usdcToken.balanceOf(address(sdiem)), sdiemUsdcBefore + 500e6, 86400);
+        // Remaining balance includes rounding dust returned by sDIEM
+        assertApproxEqAbs(usdcToken.balanceOf(address(splitter)), 1000e6, 86400);
     }
 
     function test_distribute_allToSdiem() public {
@@ -189,7 +190,7 @@ contract RevenueSplitterTest is Test {
 
         splitter.distribute();
 
-        assertEq(usdcToken.balanceOf(address(sdiem)), sdiemUsdcBefore + amount);
+        assertApproxEqAbs(usdcToken.balanceOf(address(sdiem)), sdiemUsdcBefore + amount, 86400);
     }
 
     function test_distribute_allToCsdiem() public {
@@ -283,8 +284,8 @@ contract RevenueSplitterTest is Test {
 
         splitter.distribute();
 
-        // Verify splitter is empty
-        assertEq(usdcToken.balanceOf(address(splitter)), 0);
+        // Verify splitter is nearly empty (may hold Synthetix rounding dust)
+        assertLe(usdcToken.balanceOf(address(splitter)), 86400);
     }
 
     function test_pendingRevenue() public {

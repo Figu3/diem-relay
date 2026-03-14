@@ -167,6 +167,20 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
     }
 
     /// @inheritdoc IsDIEM
+    function canCompleteWithdraw(address account) external view override returns (bool) {
+        WithdrawalRequest storage req = _withdrawalRequests[account];
+        if (req.amount == 0) return false;
+        if (block.timestamp < req.requestedAt + WITHDRAWAL_DELAY) return false;
+        // Check liquid + claimable pending
+        uint256 liquid = diem.balanceOf(address(this));
+        (,uint256 cooldownEnd, uint256 pending) = diemStaking.stakedInfos(address(this));
+        if (pending > 0 && block.timestamp >= cooldownEnd) {
+            liquid += pending; // Would be claimed automatically
+        }
+        return liquid >= req.amount;
+    }
+
+    /// @inheritdoc IsDIEM
     function veniceCooldownEnd() external view override returns (uint256) {
         (, uint256 cooldownEnd,) = diemStaking.stakedInfos(address(this));
         return cooldownEnd;
@@ -199,10 +213,10 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
 
     /**
      * @notice Request withdrawal. Starts 24h delay.
-     * @dev Deducts from staker's balance. Initiates Venice unstake
-     *      (which starts the 24h cooldown). Warning: Venice resets
-     *      the cooldown timer for ALL pending if called again.
-     *      Users with existing pending requests accumulate amounts.
+     * @dev Deducts from staker's balance. Auto-initiates Venice unstake
+     *      if no cooldown is active, so both timers run in parallel.
+     *      Users with existing pending requests accumulate amounts
+     *      and the timer resets.
      */
     function requestWithdraw(uint256 amount)
         external
@@ -223,13 +237,15 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         totalPendingWithdrawals += amount;
         totalPendingNotInitiated += amount;
         emit WithdrawalRequested(msg.sender, amount);
+
+        // Auto-initiate Venice unstake if possible
+        _tryInitiateVeniceUnstake();
     }
 
     /**
      * @notice Complete withdrawal after 24h delay.
-     * @dev Requires:
-     *      1. User's personal 24h delay has elapsed
-     *      2. Contract has enough liquid DIEM (call claimFromVenice first if needed)
+     * @dev Auto-claims from Venice if cooldown has matured but hasn't
+     *      been claimed yet. Only reverts if Venice cooldown is still active.
      */
     function completeWithdraw()
         external
@@ -244,8 +260,16 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
             "sDIEM: withdrawal delay not met"
         );
 
+        // Auto-claim from Venice if matured but not yet claimed
         uint256 liquid = diem.balanceOf(address(this));
-        require(liquid >= amount, "sDIEM: claim from Venice first");
+        if (liquid < amount) {
+            (,, uint256 pending) = diemStaking.stakedInfos(address(this));
+            if (pending > 0) {
+                diemStaking.unstake();
+                liquid = diem.balanceOf(address(this));
+            }
+        }
+        require(liquid >= amount, "sDIEM: Venice cooldown not finished");
 
         // Effects
         req.amount = 0;
@@ -257,12 +281,35 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         diem.safeTransfer(msg.sender, amount);
     }
 
-    /// @notice Claim accrued USDC rewards.
+    /**
+     * @notice Cancel a pending withdrawal and re-stake the DIEM.
+     * @dev Returns the pending amount back to staked balance.
+     *      Useful if a user changes their mind or is stuck waiting.
+     */
+    function cancelWithdraw()
+        external
+        override
+        nonReentrant
+        updateReward(msg.sender)
+    {
+        WithdrawalRequest storage req = _withdrawalRequests[msg.sender];
+        uint256 amount = req.amount;
+        require(amount > 0, "sDIEM: no pending withdrawal");
+
+        // Effects — move back to staked balance
+        req.amount = 0;
+        req.requestedAt = 0;
+        totalPendingWithdrawals -= amount;
+        _balances[msg.sender] += amount;
+        totalStaked += amount;
+        emit WithdrawalCancelled(msg.sender, amount);
+    }
+
+    /// @notice Claim accrued USDC rewards. Always allowed, even when paused.
     function claimReward()
         public
         override
         nonReentrant
-        whenNotPaused
         updateReward(msg.sender)
     {
         _claimReward(msg.sender);
@@ -270,20 +317,15 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
 
     /**
      * @notice Request full withdrawal + claim rewards in one tx.
+     *         Always allowed, even when paused (users must be able to exit).
      * @dev Only requests the withdrawal — user must call completeWithdraw()
      *      after the 24h delay to actually receive DIEM.
-     *
-     *      Slither H-1 note: _claimReward() reads `rewards[user]` which was
-     *      already settled by the `updateReward` modifier before any state
-     *      mutation. The external call in _claimReward (usdc.safeTransfer)
-     *      follows the CEI pattern and is guarded by `nonReentrant`.
-     *      False positive — safe as-is.
+     *      Auto-initiates Venice unstake if no cooldown is active.
      */
     function exit()
         external
         override
         nonReentrant
-        whenNotPaused
         updateReward(msg.sender)
     {
         uint256 bal = _balances[msg.sender];
@@ -298,6 +340,9 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
             totalPendingWithdrawals += bal;
             totalPendingNotInitiated += bal;
             emit WithdrawalRequested(msg.sender, bal);
+
+            // Auto-initiate Venice unstake if possible
+            _tryInitiateVeniceUnstake();
         }
         _claimReward(msg.sender);
     }
@@ -336,25 +381,34 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
 
     /**
      * @notice Batch-send accumulated withdrawal amounts to Venice. Anyone can call.
-     * @dev Calls diemStaking.initiateUnstake() once for all pending amounts
-     *      that haven't been sent yet. Minimizes cooldown resets compared to
-     *      calling initiateUnstake() on every individual withdrawal request.
-     *
-     *      Guarded: reverts if Venice cooldown is active to prevent griefing.
-     *      Without this check, an attacker could cycle 1-DIEM requestWithdraw +
-     *      initiateVeniceUnstake to permanently reset the cooldown for ALL
-     *      pending amounts, blocking legitimate withdrawals indefinitely.
+     * @dev Claims matured cooldown first (M-01 fix) to prevent re-locking.
+     *      Reverts if Venice cooldown is still active or nothing to initiate.
      */
     function initiateVeniceUnstake() external override nonReentrant {
-        uint256 amount = totalPendingNotInitiated;
-        require(amount > 0, "sDIEM: nothing to initiate");
+        require(totalPendingNotInitiated > 0, "sDIEM: nothing to initiate");
+        _tryInitiateVeniceUnstake();
+    }
 
-        // Guard: prevent cooldown reset griefing
+    /**
+     * @dev Internal: attempt to initiate Venice unstake for all pending amounts.
+     *      - If matured pending exists, claims it first (M-01 fix).
+     *      - If cooldown is active, silently returns (no revert for auto-calls).
+     */
+    function _tryInitiateVeniceUnstake() internal {
+        uint256 amount = totalPendingNotInitiated;
+        if (amount == 0) return;
+
         (, uint256 cooldownEnd, uint256 pending) = diemStaking.stakedInfos(address(this));
-        require(
-            pending == 0 || block.timestamp >= cooldownEnd,
-            "sDIEM: Venice cooldown active"
-        );
+
+        if (pending > 0) {
+            if (block.timestamp >= cooldownEnd) {
+                // M-01 fix: claim matured cooldown before initiating new one
+                diemStaking.unstake();
+            } else {
+                // Cooldown still active — can't initiate, return silently
+                return;
+            }
+        }
 
         // Effects
         totalPendingNotInitiated = 0;
@@ -385,8 +439,8 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
     // ── Operator — reward notification ──────────────────────────────────
 
     /**
-     * @notice Seed a new 24h reward period. Operator must have transferred
-     *         `reward` USDC to this contract before calling.
+     * @notice Seed a new 24h reward period. Pulls USDC from caller.
+     * @dev L-01 fix: returns rounding dust to caller instead of stranding it.
      * @param reward Amount of USDC to distribute over the next 24 hours.
      */
     function notifyRewardAmount(uint256 reward)
@@ -397,14 +451,26 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
     {
         require(reward > 0, "sDIEM: zero reward");
 
+        // Pull USDC from operator (single-tx instead of pre-transfer)
+        usdc.safeTransferFrom(msg.sender, address(this), reward);
+
+        uint256 total;
         if (block.timestamp >= periodFinish) {
-            // New period
-            rewardRate = reward / REWARDS_DURATION;
+            total = reward;
         } else {
-            // Extend existing period — add leftover + new
             uint256 remaining = periodFinish - block.timestamp;
             uint256 leftover = remaining * rewardRate;
-            rewardRate = (leftover + reward) / REWARDS_DURATION;
+            total = leftover + reward;
+        }
+
+        rewardRate = total / REWARDS_DURATION;
+        require(rewardRate > 0, "sDIEM: reward rate zero");
+
+        // L-01 fix: return rounding dust to caller
+        uint256 distributable = rewardRate * REWARDS_DURATION;
+        uint256 dust = total - distributable;
+        if (dust > 0) {
+            usdc.safeTransfer(msg.sender, dust);
         }
 
         // Sanity: contract must hold enough USDC to pay out

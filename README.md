@@ -60,7 +60,7 @@ User stakes DIEM → sDIEM/csDIEM
 ```
 
 - **Permissionless Venice management**: `claimFromVenice()` and `redeployExcess()` callable by anyone
-- **24h async withdrawals**: Users request withdrawal → 24h delay (matches Venice cooldown) → complete withdrawal
+- **24h async withdrawals**: Users `requestWithdraw()` (auto-initiates Venice unstake) → wait 24h → `completeWithdraw()` (auto-claims from Venice). Cancel anytime with `cancelWithdraw()`
 
 ### RevenueSplitter
 
@@ -118,7 +118,7 @@ bun run dev            # http://localhost:3100
 cd contracts
 forge install
 forge build
-forge test             # 206 tests (unit, fuzz, invariant)
+forge test             # 242 tests (unit, fuzz, invariant)
 ```
 
 ### Deploy
@@ -157,9 +157,30 @@ OPERATOR=0x... forge script script/DeployCSDiem.s.sol --rpc-url $BASE_RPC_URL --
 ## Security
 
 - **Static analysis**: Slither clean on all contracts (zero High/Medium/Critical)
-- **Test coverage**: 206 tests across 7 suites including invariant + fuzz testing
+- **Test coverage**: 242 tests across 8 suites including invariant + fuzz testing
 - **Permissionless design**: Venice management and revenue distribution require no special roles — anyone can call
-- **Pause design**: Deposits/staking gated behind pause; withdrawals always allowed
+- **Pause design**: Deposits/staking gated behind pause; withdrawals and reward claims always allowed (even when paused)
 - **csDIEM**: Two-step admin transfer, ERC-4626 virtual share offset (1e6) for inflation attack protection
-- **sDIEM**: Immutable admin, CEI pattern, SafeERC20 throughout
+- **sDIEM**: Two-step admin transfer, CEI pattern, SafeERC20 throughout
 - **RevenueSplitter**: ReentrancyGuard, two-step admin transfer, max slippage cap (10%), min distribution threshold, token recovery (non-USDC)
+- **Audited** by [Bretzel](https://github.com/bretzke) (March 2026) — 0 Critical, 0 High, 1 Medium, 1 Low, 4 Informational. All findings remediated.
+
+### Audit Remediations (v2)
+
+| Finding | Severity | Fix |
+|---|---|---|
+| M-01: Venice cooldown reset DoS | Medium | Claim-first semantics in `initiateVeniceUnstake()` — claims matured cooldown before initiating new one |
+| L-01: Reward dust stuck forever | Low | `notifyRewardAmount()` returns rounding dust to caller |
+| I-01: DIEMVault missing safety functions | Info | Added `nonReentrant` to `withdrawProtocolFees()`, added `recoverERC20()` |
+
+### UX Improvements (v2)
+
+| Change | Before | After |
+|---|---|---|
+| Withdrawal flow | 4 manual transactions | 2 transactions: `requestWithdraw()` + `completeWithdraw()` |
+| Venice initiation | Manual `initiateVeniceUnstake()` | Auto-initiated on `requestWithdraw()`/`requestRedeem()` |
+| Venice claim | Manual `claimFromVenice()` | Auto-claimed on `completeWithdraw()`/`completeRedeem()` |
+| Cancel withdrawal | Not possible | `cancelWithdraw()` / `cancelRedeem()` re-stakes DIEM |
+| Check readiness | Simulate tx | `canCompleteWithdraw(addr)` / `canCompleteRedeem(addr)` view |
+| Pause behavior | Blocked exit + claim | Only deposits blocked; exit and claim always allowed |
+| Reward seeding | 2 txs (transfer + notify) | 1 tx (`notifyRewardAmount` pulls via `transferFrom`) |

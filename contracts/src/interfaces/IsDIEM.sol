@@ -32,6 +32,7 @@ interface IsDIEM {
     event Staked(address indexed user, uint256 amount);
     event WithdrawalRequested(address indexed user, uint256 amount);
     event WithdrawalCompleted(address indexed user, uint256 amount);
+    event WithdrawalCancelled(address indexed user, uint256 amount);
     event RewardPaid(address indexed user, uint256 reward);
     event RewardNotified(uint256 reward, uint256 rewardRate, uint256 periodFinish);
     event Paused(address indexed by);
@@ -77,6 +78,9 @@ interface IsDIEM {
     /// @notice Withdrawal request for a specific user.
     function withdrawalRequests(address account) external view returns (uint256 amount, uint256 requestedAt);
 
+    /// @notice Check if a user can complete their withdrawal right now.
+    function canCompleteWithdraw(address account) external view returns (bool);
+
     /// @notice Venice cooldown end timestamp for this contract.
     function veniceCooldownEnd() external view returns (uint256);
 
@@ -88,11 +92,14 @@ interface IsDIEM {
     /// @notice Stake DIEM. Tokens are forwarded to Venice immediately.
     function stake(uint256 amount) external;
 
-    /// @notice Request withdrawal. Starts 24h delay. Call initiateVeniceUnstake() to batch-send to Venice.
+    /// @notice Request withdrawal. Starts 24h delay. Auto-initiates Venice unstake when possible.
     function requestWithdraw(uint256 amount) external;
 
-    /// @notice Complete withdrawal after 24h delay + Venice cooldown.
+    /// @notice Complete withdrawal after 24h delay. Auto-claims from Venice if matured.
     function completeWithdraw() external;
+
+    /// @notice Cancel pending withdrawal and re-stake the DIEM.
+    function cancelWithdraw() external;
 
     /// @notice Claim accrued USDC rewards.
     function claimReward() external;

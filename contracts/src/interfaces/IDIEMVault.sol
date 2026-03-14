@@ -22,6 +22,7 @@ interface IDIEMVault {
     event FeeBpsChanged(uint256 oldBps, uint256 newBps);
     event Paused(address indexed by);
     event Unpaused(address indexed by);
+    event TokenRecovered(address indexed token, address indexed to, uint256 amount);
 
     // ── Views ───────────────────────────────────────────────────────────
 
@@ -46,4 +47,5 @@ interface IDIEMVault {
     function setMinDeposit(uint256 newMin) external;
     function setFeeBps(uint256 newFeeBps) external;
     function setAdmin(address newAdmin) external;
+    function recoverERC20(address token, address to, uint256 amount) external;
 }

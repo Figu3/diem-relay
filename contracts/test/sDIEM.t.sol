@@ -48,27 +48,25 @@ contract sDIEMTest is Test {
     // ── Helpers ──────────────────────────────────────────────────────────
 
     function _seedRewards(uint256 amount) internal {
-        usdcToken.mint(address(staking), amount);
-        vm.prank(operator);
+        usdcToken.mint(operator, amount);
+        vm.startPrank(operator);
+        usdcToken.approve(address(staking), amount);
         staking.notifyRewardAmount(amount);
+        vm.stopPrank();
     }
 
-    /// @dev Stake, request, initiate Venice unstake, warp 24h, claim from Venice, complete — full async flow.
+    /// @dev Stake, request (auto-initiates Venice), warp 24h, complete (auto-claims) — full async flow.
     function _stakeAndWithdraw(address user, uint256 stakeAmount, uint256 withdrawAmount) internal {
         vm.prank(user);
         staking.stake(stakeAmount);
 
         vm.prank(user);
         staking.requestWithdraw(withdrawAmount);
-
-        // Initiate Venice unstake (permissionless, batches pending)
-        staking.initiateVeniceUnstake();
+        // requestWithdraw now auto-initiates Venice unstake
 
         vm.warp(block.timestamp + 24 hours);
 
-        // Claim from Venice to get liquid DIEM
-        staking.claimFromVenice();
-
+        // completeWithdraw now auto-claims from Venice
         vm.prank(user);
         staking.completeWithdraw();
     }
@@ -242,9 +240,7 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
 
-        // requestWithdraw no longer calls initiateUnstake directly — must call separately
-        staking.initiateVeniceUnstake();
-
+        // requestWithdraw auto-initiates Venice unstake
         // Venice should have pending unstake
         (uint256 staked,, uint256 pending) = diemToken.stakedInfos(address(staking));
         assertEq(staked, 0);
@@ -260,17 +256,12 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
 
-        // Initiate Venice unstake (decoupled from requestWithdraw)
-        staking.initiateVeniceUnstake();
-
-        // Warp past 24h delay
+        // Warp past 24h delay (Venice unstake auto-initiated by requestWithdraw)
         vm.warp(block.timestamp + 24 hours);
-
-        // Claim from Venice first (permissionless)
-        staking.claimFromVenice();
 
         uint256 balBefore = diemToken.balanceOf(alice);
 
+        // completeWithdraw auto-claims from Venice
         vm.prank(alice);
         staking.completeWithdraw();
 
@@ -287,13 +278,12 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
 
-        staking.initiateVeniceUnstake();
         vm.warp(block.timestamp + 24 hours);
-        staking.claimFromVenice();
 
         vm.expectEmit(true, false, false, true);
         emit IsDIEM.WithdrawalCompleted(alice, DIEM_AMOUNT);
 
+        // completeWithdraw auto-claims from Venice
         vm.prank(alice);
         staking.completeWithdraw();
     }
@@ -319,19 +309,42 @@ contract sDIEMTest is Test {
         staking.completeWithdraw();
     }
 
-    function test_completeWithdraw_revertsInsufficientLiquidity() public {
+    function test_completeWithdraw_revertsVeniceCooldownNotFinished() public {
+        // Scenario: two sequential requests where the second resets Venice cooldown.
+        // Personal delay is met but Venice cooldown is still active.
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
+        // First request at t=0 — auto-initiates Venice (cooldownEnd = t+24h)
         vm.prank(alice);
-        staking.requestWithdraw(DIEM_AMOUNT);
+        staking.requestWithdraw(DIEM_AMOUNT / 2);
 
-        staking.initiateVeniceUnstake();
+        // Warp 23h — first request's Venice cooldown almost done
+        vm.warp(block.timestamp + 23 hours);
+
+        // Stake more and request again — this accumulates but the Venice cooldown
+        // from the first initiation is still active (1h left), so _tryInitiateVeniceUnstake
+        // silently returns. The new amount stays in totalPendingNotInitiated.
+        diemToken.mint(alice, DIEM_AMOUNT);
+        vm.startPrank(alice);
+        diemToken.approve(address(staking), DIEM_AMOUNT);
+        staking.stake(DIEM_AMOUNT);
+        vm.stopPrank();
+
+        vm.prank(alice);
+        staking.requestWithdraw(DIEM_AMOUNT / 2);
+        // Personal timer reset to t+23h, so personal delay met at t+47h
+
+        // Warp 24h (to t+47h) — personal delay met for the accumulated request
         vm.warp(block.timestamp + 24 hours);
 
-        // Don't call claimFromVenice — DIEM in cooldown but not claimed
+        // At t+47h: Venice cooldown from first initiation ended at t+24h (matured).
+        // completeWithdraw auto-claims the first batch (50 DIEM).
+        // But total pending is 100 DIEM and only 50 was initiated on Venice.
+        // The second 50 was never initiated (cooldown was active at t+23h).
+        // So liquid after auto-claim = 50, but need 100. Reverts.
         vm.prank(alice);
-        vm.expectRevert("sDIEM: claim from Venice first");
+        vm.expectRevert("sDIEM: Venice cooldown not finished");
         staking.completeWithdraw();
     }
 
@@ -487,10 +500,9 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
-        // Request withdraw then initiate Venice unstake (decoupled)
+        // Request withdraw (auto-initiates Venice unstake)
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
-        staking.initiateVeniceUnstake();
 
         // Warp past cooldown
         vm.warp(block.timestamp + 24 hours);
@@ -544,10 +556,9 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
-        // Alice requests withdraw — starts pending
+        // Alice requests withdraw — starts pending (auto-initiates Venice unstake)
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
-        staking.initiateVeniceUnstake();
 
         // Warp, claim from Venice — liquid = 100 (all pending returned)
         vm.warp(block.timestamp + 24 hours);
@@ -596,8 +607,8 @@ contract sDIEMTest is Test {
 
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
-        staking.initiateVeniceUnstake();
 
+        // requestWithdraw auto-initiates Venice unstake
         // Cooldown should be block.timestamp + 24h
         assertEq(staking.veniceCooldownEnd(), block.timestamp + 24 hours);
     }
@@ -609,10 +620,12 @@ contract sDIEMTest is Test {
     // ── notifyRewardAmount ──────────────────────────────────────────────
 
     function test_notifyRewardAmount_setsPeriod() public {
-        usdcToken.mint(address(staking), REWARD_AMOUNT);
+        usdcToken.mint(operator, REWARD_AMOUNT);
 
-        vm.prank(operator);
+        vm.startPrank(operator);
+        usdcToken.approve(address(staking), REWARD_AMOUNT);
         staking.notifyRewardAmount(REWARD_AMOUNT);
+        vm.stopPrank();
 
         assertEq(staking.periodFinish(), block.timestamp + 24 hours);
         assertGt(staking.rewardRate(), 0);
@@ -623,27 +636,33 @@ contract sDIEMTest is Test {
         staking.stake(DIEM_AMOUNT);
 
         // First reward
-        usdcToken.mint(address(staking), REWARD_AMOUNT);
-        vm.prank(operator);
+        usdcToken.mint(operator, REWARD_AMOUNT);
+        vm.startPrank(operator);
+        usdcToken.approve(address(staking), REWARD_AMOUNT);
         staking.notifyRewardAmount(REWARD_AMOUNT);
+        vm.stopPrank();
 
         // Wait 12 hours (half period)
         vm.warp(block.timestamp + 12 hours);
 
         // Second reward — extends with leftover
-        usdcToken.mint(address(staking), REWARD_AMOUNT);
-        vm.prank(operator);
+        usdcToken.mint(operator, REWARD_AMOUNT);
+        vm.startPrank(operator);
+        usdcToken.approve(address(staking), REWARD_AMOUNT);
         staking.notifyRewardAmount(REWARD_AMOUNT);
+        vm.stopPrank();
 
         assertEq(staking.periodFinish(), block.timestamp + 24 hours);
     }
 
     function test_notifyRewardAmount_revertsNotOperator() public {
-        usdcToken.mint(address(staking), REWARD_AMOUNT);
+        usdcToken.mint(alice, REWARD_AMOUNT);
 
-        vm.prank(alice);
+        vm.startPrank(alice);
+        usdcToken.approve(address(staking), REWARD_AMOUNT);
         vm.expectRevert("sDIEM: not operator");
         staking.notifyRewardAmount(REWARD_AMOUNT);
+        vm.stopPrank();
     }
 
     function test_notifyRewardAmount_revertsZeroReward() public {
@@ -653,10 +672,12 @@ contract sDIEMTest is Test {
     }
 
     function test_notifyRewardAmount_revertsInsufficientBalance() public {
-        // Don't mint USDC — contract has no balance
-        vm.prank(operator);
-        vm.expectRevert("sDIEM: reward too high");
+        // Operator has no USDC — safeTransferFrom will revert
+        vm.startPrank(operator);
+        usdcToken.approve(address(staking), REWARD_AMOUNT);
+        vm.expectRevert(); // ERC20 insufficient balance
         staking.notifyRewardAmount(REWARD_AMOUNT);
+        vm.stopPrank();
     }
 
     // ── Admin ───────────────────────────────────────────────────────────
@@ -774,18 +795,14 @@ contract sDIEMTest is Test {
         _seedRewards(REWARD_AMOUNT);
         vm.warp(block.timestamp + 12 hours);
 
-        // 3. Alice requests full withdrawal
+        // 3. Alice requests full withdrawal (auto-initiates Venice unstake)
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
-        staking.initiateVeniceUnstake();
 
         // 4. Wait for delay + cooldown
         vm.warp(block.timestamp + 24 hours);
 
-        // 5. Anyone claims from Venice
-        staking.claimFromVenice();
-
-        // 6. Alice completes withdrawal
+        // 5. Alice completes withdrawal (auto-claims from Venice)
         uint256 diemBefore = diemToken.balanceOf(alice);
         vm.prank(alice);
         staking.completeWithdraw();
@@ -808,20 +825,28 @@ contract sDIEMTest is Test {
         vm.prank(bob);
         staking.stake(DIEM_AMOUNT);
 
-        // Both request withdrawal
+        // Both request withdrawal (first auto-initiates Venice, second may not if cooldown active)
         vm.prank(alice);
         staking.requestWithdraw(DIEM_AMOUNT);
+        // Alice's request auto-initiated Venice unstake for 100 DIEM
+
         vm.prank(bob);
         staking.requestWithdraw(DIEM_AMOUNT);
-        staking.initiateVeniceUnstake();
+        // Bob's request: Venice cooldown is active (just started), so _tryInitiateVeniceUnstake
+        // silently returns. Bob's 100 DIEM stays in totalPendingNotInitiated.
 
         assertEq(staking.totalPendingWithdrawals(), DIEM_AMOUNT * 2);
 
-        // Wait and claim
+        // Wait for first cooldown to mature
         vm.warp(block.timestamp + 24 hours);
-        staking.claimFromVenice();
 
-        // Both complete
+        // Now initiate the second batch (Bob's) — claims matured first, then initiates
+        staking.initiateVeniceUnstake();
+
+        // Wait for second cooldown
+        vm.warp(block.timestamp + 24 hours);
+
+        // Both complete (auto-claims from Venice)
         vm.prank(alice);
         staking.completeWithdraw();
         vm.prank(bob);
@@ -845,15 +870,14 @@ contract sDIEMTest is Test {
 
         vm.prank(alice);
         staking.requestWithdraw(stakeAmount);
-        staking.initiateVeniceUnstake();
 
         assertEq(staking.balanceOf(alice), 0);
         assertEq(staking.totalStaked(), 0);
         assertEq(staking.totalPendingWithdrawals(), stakeAmount);
 
         vm.warp(block.timestamp + 24 hours);
-        staking.claimFromVenice();
 
+        // completeWithdraw auto-claims from Venice
         vm.prank(alice);
         staking.completeWithdraw();
 
@@ -868,9 +892,11 @@ contract sDIEMTest is Test {
         vm.prank(alice);
         staking.stake(DIEM_AMOUNT);
 
-        usdcToken.mint(address(staking), rewardAmount);
-        vm.prank(operator);
+        usdcToken.mint(operator, rewardAmount);
+        vm.startPrank(operator);
+        usdcToken.approve(address(staking), rewardAmount);
         staking.notifyRewardAmount(rewardAmount);
+        vm.stopPrank();
 
         vm.warp(block.timestamp + elapsed);
 

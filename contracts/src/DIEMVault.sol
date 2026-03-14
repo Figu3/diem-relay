@@ -104,7 +104,7 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
      * @param to   Destination address.
      * @param amount Amount to withdraw (must be <= protocolFees).
      */
-    function withdrawProtocolFees(address to, uint256 amount) external override onlyAdmin {
+    function withdrawProtocolFees(address to, uint256 amount) external override onlyAdmin nonReentrant {
         require(to != address(0), "DIEMVault: zero address");
         require(amount > 0, "DIEMVault: zero amount");
         require(amount <= protocolFees, "DIEMVault: exceeds fees");
@@ -145,6 +145,15 @@ contract DIEMVault is IDIEMVault, ReentrancyGuard {
         uint256 oldBps = feeBps;
         feeBps = newFeeBps;
         emit FeeBpsChanged(oldBps, newFeeBps);
+    }
+
+    /// @notice Recover tokens accidentally sent to the vault.
+    /// @dev Cannot recover the deposit token to protect borrower funds.
+    function recoverERC20(address token, address to, uint256 amount) external override onlyAdmin {
+        require(token != address(depositToken), "DIEMVault: cannot recover deposit token");
+        require(to != address(0), "DIEMVault: zero address");
+        IERC20(token).safeTransfer(to, amount);
+        emit TokenRecovered(token, to, amount);
     }
 
     /// @notice Transfer admin role to a new address.

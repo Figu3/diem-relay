@@ -173,9 +173,9 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         uint256 toSdiem = (totalUsdc * sdiemBps) / BPS_DENOMINATOR;
         uint256 toCsdiem = totalUsdc - toSdiem;
 
-        // 1. sDIEM — transfer USDC and notify reward
+        // 1. sDIEM — approve USDC and notify reward (sDIEM pulls via transferFrom)
         if (toSdiem > 0) {
-            usdc.safeTransfer(address(sdiem), toSdiem);
+            usdc.forceApprove(address(sdiem), toSdiem);
             sdiem.notifyRewardAmount(toSdiem);
         }
 
