@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { parseUnits } from "viem";
 import { useAccount } from "wagmi";
 
@@ -17,14 +17,12 @@ import { useSDiem } from "@/hooks/useSDiem";
 import { useDiemToken } from "@/hooks/useDiemToken";
 import { useApproval } from "@/hooks/useApproval";
 import { useStake } from "@/hooks/useStake";
-import { useRequestWithdraw, useCompleteWithdraw } from "@/hooks/useWithdrawSDiem";
+import { useRequestWithdraw, useCompleteWithdraw, useCancelWithdraw } from "@/hooks/useWithdrawSDiem";
 import { useClaimReward } from "@/hooks/useClaimReward";
 import { useExit } from "@/hooks/useExit";
 import { DIEM_TOKEN, SDIEM_ADDRESS, DIEM_DECIMALS } from "@/config/contracts";
 import { formatDiem, formatUsdc } from "@/lib/format";
 import { calcSDiemApr } from "@/lib/apr";
-
-const WITHDRAWAL_DELAY = 24n * 60n * 60n; // 24h in seconds
 
 export function SDiemCard() {
   const { isConnected } = useAccount();
@@ -34,6 +32,7 @@ export function SDiemCard() {
   const stakeAction = useStake();
   const requestAction = useRequestWithdraw();
   const completeAction = useCompleteWithdraw();
+  const cancelAction = useCancelWithdraw();
   const claimAction = useClaimReward();
   const exitAction = useExit();
 
@@ -64,18 +63,16 @@ export function SDiemCard() {
     requestAction.isPending || requestAction.isConfirming;
   const completing =
     completeAction.isPending || completeAction.isConfirming;
+  const cancelling =
+    cancelAction.isPending || cancelAction.isConfirming;
   const claiming =
     claimAction.isPending || claimAction.isConfirming;
   const exiting =
     exitAction.isPending || exitAction.isConfirming;
 
   const hasPending = sdiem.pendingWithdrawAmount > 0n;
-  const unlockTime = sdiem.pendingWithdrawRequestedAt + WITHDRAWAL_DELAY;
-  const canComplete = useMemo(() => {
-    if (!hasPending) return false;
-    const now = BigInt(Math.floor(Date.now() / 1000));
-    return now >= unlockTime;
-  }, [hasPending, unlockTime]);
+  const unlockTime = sdiem.pendingWithdrawRequestedAt + sdiem.withdrawalDelay;
+  const canComplete = sdiem.canComplete;
 
   return (
     <VaultCard
@@ -166,20 +163,29 @@ export function SDiemCard() {
                           <CountdownTimer periodFinish={unlockTime} />
                         </div>
                       )}
-                      <button
-                        onClick={() => completeAction.completeWithdraw()}
-                        disabled={!canComplete || completing}
-                        className="mt-2 w-full rounded-lg border border-green-500/40 py-2 text-sm font-medium text-green-400 transition hover:bg-green-500/10 disabled:opacity-40"
-                      >
-                        {completing ? "Completing..." : "Complete Withdrawal"}
-                      </button>
+                      <div className="mt-2 flex gap-2">
+                        <button
+                          onClick={() => completeAction.completeWithdraw()}
+                          disabled={!canComplete || completing}
+                          className="flex-1 rounded-lg border border-green-500/40 py-2 text-sm font-medium text-green-400 transition hover:bg-green-500/10 disabled:opacity-40"
+                        >
+                          {completing ? "Completing..." : "Complete Withdrawal"}
+                        </button>
+                        <button
+                          onClick={() => cancelAction.cancelWithdraw()}
+                          disabled={cancelling}
+                          className="rounded-lg border border-gray-500/40 px-3 py-2 text-sm font-medium text-gray-400 transition hover:bg-gray-500/10 disabled:opacity-40"
+                        >
+                          {cancelling ? "..." : "Cancel"}
+                        </button>
+                      </div>
                       <TxStatus
-                        isPending={completeAction.isPending}
-                        isConfirming={completeAction.isConfirming}
-                        isSuccess={completeAction.isSuccess}
-                        error={completeAction.error}
-                        hash={completeAction.hash}
-                        onReset={completeAction.reset}
+                        isPending={completeAction.isPending || cancelAction.isPending}
+                        isConfirming={completeAction.isConfirming || cancelAction.isConfirming}
+                        isSuccess={completeAction.isSuccess || cancelAction.isSuccess}
+                        error={completeAction.error ?? cancelAction.error}
+                        hash={completeAction.hash ?? cancelAction.hash}
+                        onReset={() => { completeAction.reset(); cancelAction.reset(); }}
                       />
                     </div>
                   )}
@@ -196,7 +202,12 @@ export function SDiemCard() {
                     onApprove={() => {}}
                     onAction={handleRequestWithdraw}
                     actionLabel="Request Withdraw (24h delay)"
-                    disabled={!withdrawAmt || withdrawAmt === "0" || sdiem.paused}
+                    disabled={
+                      !withdrawAmt ||
+                      withdrawAmt === "0" ||
+                      sdiem.paused ||
+                      (sdiem.minWithdraw > 0n && parseUnits(withdrawAmt || "0", DIEM_DECIMALS) < sdiem.minWithdraw)
+                    }
                     loading={requesting}
                   />
                   {sdiem.userStaked > 0n && (

@@ -50,3 +50,25 @@ export function useCompleteWithdraw() {
 
   return { completeWithdraw, isPending, isConfirming, isSuccess, error, hash, reset };
 }
+
+export function useCancelWithdraw() {
+  const queryClient = useQueryClient();
+  const { writeContract, data: hash, isPending, error, reset } = useWriteContract();
+
+  const { isLoading: isConfirming, isSuccess } =
+    useWaitForTransactionReceipt({ hash });
+
+  useEffect(() => {
+    if (isSuccess) queryClient.invalidateQueries();
+  }, [isSuccess, queryClient]);
+
+  const cancelWithdraw = () => {
+    writeContract({
+      address: SDIEM_ADDRESS,
+      abi: sDiemAbi,
+      functionName: "cancelWithdraw",
+    });
+  };
+
+  return { cancelWithdraw, isPending, isConfirming, isSuccess, error, hash, reset };
+}

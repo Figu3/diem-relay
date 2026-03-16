@@ -60,13 +60,16 @@ function computeCost(usage: UsageData): number {
  * The caller MUST call settleOrRefund() after Venice responds.
  */
 export function preflightCheck(borrower: string, model: string): PreflightResult {
-  const b = getBorrower(borrower);
+  let b = getBorrower(borrower);
   if (!b) return { allowed: false, reservedUsd: 0, error: "Borrower not found" };
   if (!b.active) return { allowed: false, reservedUsd: 0, error: "Account suspended" };
-  if (b.balance_usd <= 0) return { allowed: false, reservedUsd: 0, error: "Insufficient balance" };
 
-  // M-5: Use shared daily reset logic
+  // M-5: Sync balance from credits BEFORE checking — advance credits bought
+  // yesterday for today won't be reflected in denormalized balance_usd yet.
   const dailySpent = getDailySpent(borrower);
+  // Re-read after potential sync from resetDailyIfNeeded
+  b = getBorrower(borrower)!;
+  if (b.balance_usd <= 0) return { allowed: false, reservedUsd: 0, error: "Insufficient balance" };
   if (dailySpent >= config.maxDailySpendUsd) {
     return { allowed: false, reservedUsd: 0, error: "Daily spending limit reached" };
   }

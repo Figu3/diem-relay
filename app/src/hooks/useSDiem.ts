@@ -18,6 +18,9 @@ export function useSDiem() {
       { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "balanceOf", args: [user] },
       { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "earned", args: [user] },
       { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "withdrawalRequests", args: [user] },
+      { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "canCompleteWithdraw", args: [user] },
+      { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "WITHDRAWAL_DELAY" },
+      { address: SDIEM_ADDRESS, abi: sDiemAbi, functionName: "MIN_WITHDRAW" },
     ],
     query: { refetchInterval: 15_000 },
   });
@@ -38,6 +41,9 @@ export function useSDiem() {
     earned: address ? (get<bigint>(5) ?? 0n) : 0n,
     pendingWithdrawAmount: address ? (withdrawalData?.[0] ?? 0n) : 0n,
     pendingWithdrawRequestedAt: address ? (withdrawalData?.[1] ?? 0n) : 0n,
+    canComplete: address ? (get<boolean>(7) ?? false) : false,
+    withdrawalDelay: get<bigint>(8) ?? 86400n,
+    minWithdraw: get<bigint>(9) ?? 0n,
     isLoading,
     refetch,
   };
