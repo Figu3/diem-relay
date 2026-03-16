@@ -1,4 +1,4 @@
-# DIEM Lending Protocol — Audit Known Issues & Accepted Risks
+# DIEM Staking Protocol — Audit Known Issues & Accepted Risks
 
 > Prepared for security review. Documents known limitations, accepted risks,
 > trust assumptions, and out-of-scope items.
@@ -8,14 +8,14 @@
 ## Architecture Overview
 
 ```
-Revenue Flow:
-  Venice compute credits → USDC revenue → RevenueSplitter
-                                            ├─ sDIEM  (linear USDC rewards)
-                                            └─ csDIEM (compounding DIEM vault)
+Revenue Flow (Phase 1 — manual):
+  Venice compute credits → USDC revenue → operator calls notifyRewardAmount()
+                                            └─ sDIEM  (linear USDC rewards)
+  (Phase 2: RevenueSplitter will auto-split to sDIEM + csDIEM)
 
 Staking Flow:
   User DIEM → sDIEM/csDIEM → Venice forward-stake (compute credits)
-  Withdrawal: 24h async request → claimFromVenice() → completeWithdraw/Redeem
+  Withdrawal: 24h async request → completeWithdraw/Redeem (auto-claims from Venice)
 
 Deposit Flow (Phase 1):
   Borrower USDC → DIEMVault → off-chain relay watcher credits relay account
@@ -25,10 +25,9 @@ Deposit Flow (Phase 1):
 
 | Contract | LOC | Purpose |
 |----------|-----|---------|
-| `sDIEM.sol` | ~425 | Synthetix StakingRewards fork; deposit DIEM, earn USDC |
-| `csDIEM.sol` | ~345 | ERC-4626 compounding vault; deposit DIEM, share price grows |
-| `RevenueSplitter.sol` | ~315 | Permissionless USDC distribution to sDIEM + csDIEM |
-| `DIEMVault.sol` | ~200 | Phase 1 USDC deposit-only vault for relay |
+| `sDIEM.sol` | ~631 | Synthetix StakingRewards fork; deposit DIEM, earn USDC |
+| `csDIEM.sol` | ~556 | ERC-4626 compounding vault; deposit DIEM, share price grows |
+| `DIEMVault.sol` | ~176 | Phase 1 USDC deposit-only vault for relay |
 
 ### Privileged Roles
 
@@ -59,32 +58,12 @@ delays (up to an additional 24h per subsequent request from any user).
 - Maximum additional delay is bounded at 24h per reset
 - In practice, withdrawal request frequency is low (not every block)
 - Documenting in UI/docs that withdrawal timing is approximate
-
-**Mitigation considered but rejected**: Batch unstaking (queue requests, single
-daily Venice call) — adds significant complexity and gas costs, and creates
-its own coordination issues around who triggers the batch.
+- Batched unstaking via `totalPendingNotInitiated` minimizes the number of
+  Venice `initiateUnstake()` calls, reducing cascade frequency
 
 ---
 
-### K-2: RevenueSplitter Distribution is Atomic (Low)
-
-**Description**: `distribute()` swaps USDC→DIEM on Aerodrome then calls both
-`sDIEM.notifyRewardAmount()` and `csDIEM.donate()`. If any step fails (swap
-reverts, either receiver is paused), the entire distribution reverts.
-
-**Impact**: Revenue accumulates in the splitter until the blocking condition
-is resolved. No partial distribution is possible.
-
-**Accepted because**:
-- Revenue accumulation in the splitter is safe (USDC just sits there)
-- Admin can unpause receivers or adjust parameters to unblock
-- Partial distribution would add complexity and edge cases around
-  inconsistent reward states between sDIEM and csDIEM
-- Anyone can retry `distribute()` once the block is resolved
-
----
-
-### K-3: DIEMVault Has No Withdrawal Mechanism (Informational)
+### K-2: DIEMVault Has No Withdrawal Mechanism (Informational)
 
 **Description**: Phase 1 DIEMVault is deposit-only. Users deposit USDC and
 receive relay credits via off-chain watcher. There is no on-chain withdrawal
@@ -101,9 +80,9 @@ the off-chain relay system to credit their accounts.
 
 ---
 
-### K-4: DIEMVault Uses Single-Step Admin Transfer (Low)
+### K-3: DIEMVault Uses Single-Step Admin Transfer (Low)
 
-**Description**: Unlike sDIEM, csDIEM, and RevenueSplitter (which use two-step
+**Description**: Unlike sDIEM and csDIEM (which use two-step
 `transferAdmin`/`acceptAdmin`), DIEMVault uses a single-step `setAdmin()`.
 
 **Impact**: Admin key compromise allows immediate, irrecoverable admin takeover.
@@ -116,26 +95,25 @@ the off-chain relay system to credit their accounts.
 
 ---
 
-### K-5: Aerodrome TWAP Oracle Dependency (Low)
+### K-4: Aerodrome TWAP Oracle Dependency (Low)
 
-**Description**: RevenueSplitter uses Aerodrome's on-chain TWAP oracle
-(`IPool.quote()`) for sandwich protection. If the DIEM/USDC pool becomes
-illiquid or deprecated, TWAP quotes become unreliable.
+**Description**: csDIEM uses Aerodrome's on-chain TWAP oracle for sandwich
+protection during harvest swaps. If the DIEM/USDC pool becomes illiquid or
+deprecated, TWAP quotes become unreliable.
 
-**Impact**: Swaps could execute at unfavorable rates, or `distribute()` could
+**Impact**: Swaps could execute at unfavorable rates, or `harvest()` could
 revert if the pool has insufficient observations.
 
 **Accepted because**:
 - Aerodrome is the sole DIEM liquidity venue — if the pool dies, swaps
   are impossible anyway
 - Admin can update `oraclePool` address if pool migrates
-- TWAP window (~2 hours at default granularity=4) is long enough to
-  resist short-term manipulation
-- `maxSlippageBps` (default 200 = 2%) caps worst-case execution
+- TWAP observation window is configurable (minimum 5 minutes)
+- `maxSlippageBps` (capped at 10%) caps worst-case execution
 
 ---
 
-### K-6: Withdrawal Liquidity Coordination (Low) — PARTIALLY FIXED
+### K-5: Withdrawal Liquidity Coordination (Low) — PARTIALLY FIXED
 
 **Description**: `completeWithdraw()` (sDIEM) and `completeRedeem()` (csDIEM)
 require sufficient liquid DIEM in the contract. If `requestWithdraw()` was
@@ -159,7 +137,7 @@ again, but the process is now self-healing rather than permanently stuck.
 
 ---
 
-### K-7: Reward Precision with 6-Decimal USDC (Informational)
+### K-6: Reward Precision with 6-Decimal USDC (Informational)
 
 **Description**: sDIEM uses 1e18 precision scaling for `rewardPerToken`
 calculations despite USDC being 6 decimals. Very small stakers relative to
@@ -177,7 +155,7 @@ to zero.
 
 ---
 
-### K-8: csDIEM Donation Attack Surface (Informational)
+### K-7: csDIEM Donation Attack Surface (Informational)
 
 **Description**: Anyone can call `csDIEM.donate()` to increase share price.
 An attacker could front-run a large deposit by donating DIEM, inflating the
@@ -202,7 +180,7 @@ share price, then the depositor gets fewer shares.
 | Venice protocol internals | Third-party dependency; audited separately |
 | Aerodrome protocol internals | Third-party dependency; audited separately |
 | DIEM token contract itself | Pre-existing, not modified in this scope |
-| Phase 2 features (DIEMVault withdrawals, bridges) | Not yet implemented |
+| Phase 2 features (DIEMVault withdrawals, RevenueSplitter, bridges) | Not yet implemented |
 | Keeper/bot infrastructure | Off-chain operational concern |
 
 ---
@@ -216,7 +194,7 @@ share price, then the depositor gets fewer shares.
 3. `usdc.balanceOf(sDIEM) >= Σ(earned[user])` — contract always holds enough USDC
   to pay all accrued rewards (reward solvency)
 4. `totalPendingWithdrawals` matches sum of all pending withdrawal request amounts
-5. `diem.balanceOf(sDIEM) + venice.stakedAmount(sDIEM) >= totalStaked + totalPendingWithdrawals`
+5. `diem.balanceOf(sDIEM) + venice.stakedAmount(sDIEM) + venice.pendingAmount(sDIEM) >= totalStaked + totalPendingWithdrawals`
    — DIEM conservation across Venice
 
 ### csDIEM
@@ -225,15 +203,9 @@ share price, then the depositor gets fewer shares.
 2. Share price (`convertToAssets(1e18)`) is monotonically non-decreasing
    (donations only increase, never decrease)
 3. `totalPendingRedemptions` matches sum of all pending redemption request amounts
-4. `diem.balanceOf(csDIEM) + venice.stakedAmount(csDIEM) >= totalAssets + totalPendingRedemptions`
+4. `diem.balanceOf(csDIEM) + venice.stakedAmount(csDIEM) + venice.pendingAmount(csDIEM) >= totalAssets + totalPendingRedemptions`
    — DIEM conservation
 5. `convertToShares(convertToAssets(shares)) <= shares` — rounding favors vault
-
-### RevenueSplitter
-
-1. After `distribute()`, `usdc.balanceOf(splitter) == 0` (full sweep)
-2. `sdiemBps + csDIEM's share == 10000 bps` (100% distribution)
-3. USDC sent to sDIEM == `pendingRevenue * sdiemBps / 10000`
 
 ### DIEMVault
 

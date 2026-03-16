@@ -94,7 +94,7 @@ contracts/
     sDIEMInvariant.t.sol    7 invariant tests
     csDIEM.t.sol            56 unit/fuzz tests
     csDIEMInvariant.t.sol   5 invariant tests
-    DIEMVault.t.sol         51 unit/fuzz tests
+    DIEMVault.t.sol         52 unit/fuzz tests
     DIEMVaultInvariant.t.sol 3 invariant tests
     mocks/                  MockDIEMStaking, MockERC20, MockSwapRouter, MockCLPool
   script/
@@ -111,7 +111,7 @@ app/                        Staking UI (Next.js / wagmi / RainbowKit)
 cd contracts
 forge install
 forge build
-forge test            # 189 tests (unit, fuzz, invariant)
+forge test            # 190 tests (unit, fuzz, invariant)
 ```
 
 ## Deployment
@@ -178,7 +178,7 @@ Pashov AI deep audit (March 2026). 2 Critical findings remediated: `totalPending
 
 ### Test Coverage
 
-189 tests across 6 suites: unit, fuzz, and invariant testing. Key invariants verified:
+190 tests across 6 suites: unit, fuzz, and invariant testing. Key invariants verified:
 - Sum of staker balances equals `totalStaked`.
 - Sum of borrower balances equals `totalDeposits`.
 - csDIEM `totalAssets` accounts for all DIEM positions (staked + pending + liquid - owed).
