@@ -135,20 +135,27 @@ revert if the pool has insufficient observations.
 
 ---
 
-### K-6: Withdrawal Liquidity Coordination (Low)
+### K-6: Withdrawal Liquidity Coordination (Low) — PARTIALLY FIXED
 
 **Description**: `completeWithdraw()` (sDIEM) and `completeRedeem()` (csDIEM)
-require sufficient liquid DIEM in the contract. Users must manually call
-`claimFromVenice()` first if the contract lacks liquidity.
+require sufficient liquid DIEM in the contract. If `requestWithdraw()` was
+called while Venice had an active cooldown, `_tryInitiateVeniceUnstake()`
+returned silently and the Venice unstake was never initiated. Then
+`completeWithdraw()` reverted ("nothing claimable yet") because the re-trigger
+at the end of the function was unreachable (after the revert).
 
-**Impact**: Withdrawal completion is a two-step process that requires external
-coordination. If no one calls `claimFromVenice()`, withdrawals are blocked
-until someone does.
+**Fix (M-02)**: `completeWithdraw()` now calls `_tryInitiateVeniceUnstake()`
+**before** the payout check. This ensures deferred Venice unstakes are kicked
+off even when the original `requestWithdraw()` couldn't initiate them. The user
+still needs to wait for Venice's 24h cooldown and call `completeWithdraw()`
+again, but the process is now self-healing rather than permanently stuck.
 
-**Accepted because**:
+**Remaining accepted risk**:
 - `claimFromVenice()` is permissionless — any user, keeper, or bot can call it
 - UI will auto-detect and prompt users to claim first
 - `redeployExcess()` is also permissionless, ensuring idle DIEM earns yield
+- Worst case: user calls `completeWithdraw()` twice (first triggers Venice
+  unstake, second completes the withdrawal after 24h cooldown)
 
 ---
 

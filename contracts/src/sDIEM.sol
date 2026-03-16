@@ -268,6 +268,12 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
             "sDIEM: withdrawal delay not met"
         );
 
+        // Try to initiate Venice unstake for any pending amounts that weren't
+        // initiated during requestWithdraw (e.g., Venice cooldown was active then).
+        // Must run BEFORE the payout check — otherwise the revert at "nothing
+        // claimable yet" prevents this from ever executing (M-02 fix).
+        _tryInitiateVeniceUnstake();
+
         // Auto-claim from Venice if matured but not yet claimed
         uint256 liquid = diem.balanceOf(address(this));
         if (liquid < amount) {

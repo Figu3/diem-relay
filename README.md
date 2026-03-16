@@ -121,7 +121,8 @@ All contracts are deployed on **Base** (chain ID 8453).
 | Contract | Address |
 |---|---|
 | **DIEMVault** | `0xdc9625b026f6Dd17F9d96e608592A9C592e27eEF` |
-| **sDIEM** | `0x9566a919c7A4a7b22243736f39781A2787ddC11e` (bricked -- pending redeployment) |
+| **sDIEM** | `0x59650b79eF4c2eC193B49DbFc23d50d48EBf9f34` |
+| **sDIEM** (old, bricked) | `0x9566a919c7A4a7b22243736f39781A2787ddC11e` |
 
 Deploy scripts:
 
@@ -160,6 +161,8 @@ forge script script/DeployDIEMVault.s.sol \
 **Token recovery**: `recoverERC20()` on all contracts for accidentally sent tokens, with safeguards preventing recovery of core assets (DIEM, USDC).
 
 **Venice cooldown handling**: Claim-first semantics in `initiateVeniceUnstake()` -- claims matured cooldown before initiating new one, preventing cooldown reset DoS (audit finding M-01).
+
+**Venice unstake auto-initiation**: `completeWithdraw()` calls `_tryInitiateVeniceUnstake()` before the payout check, ensuring deferred Venice unstakes are kicked off even when `requestWithdraw()` couldn't initiate them (M-02 fix).
 
 **Partial withdrawal support**: `completeWithdraw()` pays out available liquid DIEM rather than reverting when full amount isn't funded. Auto-initiates next Venice unstake batch after partial completion.
 
