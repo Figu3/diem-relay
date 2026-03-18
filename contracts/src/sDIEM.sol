@@ -606,14 +606,19 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
 
     // ── EIP-1271 — Smart contract signature verification ─────────────
 
+    bytes4 private constant _EIP1271_MAGIC = bytes4(0x1626ba7e);
+    bytes4 private constant _EIP1271_FAIL = bytes4(0xffffffff);
+
     /**
      * @notice EIP-1271: Validates a signature on behalf of this contract.
      * @dev Venice uses this to verify the sDIEM contract controls its
      *      staking address. The admin signs messages off-chain and Venice
      *      calls isValidSignature() to verify against this contract.
      *
-     *      Returns the EIP-1271 magic value (0x1626ba7e) if the signature
-     *      was produced by the current admin. Returns 0xffffffff otherwise.
+     *      Supports both EOA and smart contract (Safe) admins:
+     *        - EOA admin: ECDSA.recover must match admin address.
+     *        - Contract admin (e.g. Safe): forwards to admin's own
+     *          isValidSignature() via nested EIP-1271.
      *
      *      Admin rotation via transferAdmin/acceptAdmin automatically
      *      updates who can sign — no separate signer management needed.
@@ -622,10 +627,20 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         bytes32 hash,
         bytes memory signature
     ) external view override returns (bytes4) {
+        // If admin is a contract (Safe, multisig, etc.), delegate to its EIP-1271
+        if (admin.code.length > 0) {
+            try IERC1271(admin).isValidSignature(hash, signature) returns (bytes4 result) {
+                return result;
+            } catch {
+                return _EIP1271_FAIL;
+            }
+        }
+
+        // EOA admin: standard ECDSA recovery
         address recovered = ECDSA.recover(hash, signature);
         if (recovered == admin) {
-            return bytes4(0x1626ba7e); // EIP-1271 magic value
+            return _EIP1271_MAGIC;
         }
-        return bytes4(0xffffffff);
+        return _EIP1271_FAIL;
     }
 }
