@@ -15,10 +15,10 @@ export function VaultCard({ title, subtitle, badge, children }: VaultCardProps) 
       <div className="mb-4 flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-gray-100">{title}</h2>
-          <p className="text-xs text-gray-500">{subtitle}</p>
+          <p className="text-xs text-[#555]">{subtitle}</p>
         </div>
         {badge && (
-          <span className="rounded-full bg-gold/15 px-3 py-0.5 text-xs font-medium text-gold">
+          <span className="rounded-full bg-accent/15 px-3 py-0.5 text-xs font-medium text-accent">
             {badge}
           </span>
         )}

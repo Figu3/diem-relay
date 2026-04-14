@@ -26,7 +26,7 @@ export function ActionButton({
     <button
       onClick={handler}
       disabled={disabled || loading}
-      className="w-full rounded-xl bg-gold py-3 text-sm font-semibold text-black transition hover:bg-gold-hover disabled:cursor-not-allowed disabled:opacity-40"
+      className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-black transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
     >
       {loading ? "Processing..." : label}
     </button>

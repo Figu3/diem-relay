@@ -37,17 +37,17 @@ export function AmountInput({
             if (/^[0-9]*\.?[0-9]*$/.test(v)) onChange(v);
           }}
           disabled={disabled}
-          className="w-full bg-transparent text-lg text-gray-100 outline-none placeholder:text-gray-600"
+          className="w-full bg-transparent font-mono text-lg text-gray-100 outline-none placeholder:text-[#555]"
         />
         <button
           onClick={() => onChange(formatUnits(max, decimals))}
           disabled={disabled || max === 0n}
-          className="shrink-0 rounded bg-gold/15 px-2 py-0.5 text-xs font-medium text-gold hover:bg-gold/25 disabled:opacity-40"
+          className="shrink-0 rounded bg-accent/15 px-2 py-0.5 text-xs font-medium text-accent hover:bg-accent/25 disabled:opacity-40"
         >
           MAX
         </button>
       </div>
-      <p className="mt-1 text-xs text-gray-500">
+      <p className="mt-1 text-xs text-[#555]">
         Balance: {formatted} {symbol}
       </p>
     </div>

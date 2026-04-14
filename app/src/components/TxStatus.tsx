@@ -25,9 +25,9 @@ export function TxStatus({
 
   return (
     <div className="mt-2 rounded-lg bg-card-inner px-3 py-2 text-xs">
-      {isPending && <span className="text-gray-400">Confirm in wallet...</span>}
+      {isPending && <span className="text-[#888]">Confirm in wallet...</span>}
       {isConfirming && (
-        <span className="text-gold">
+        <span className="text-accent">
           Confirming...{" "}
           {hash && (
             <a
@@ -64,7 +64,7 @@ export function TxStatus({
           {onReset && (
             <button
               onClick={onReset}
-              className="ml-2 text-gray-400 hover:text-gray-200"
+              className="ml-2 text-[#888] hover:text-gray-200"
             >
               Dismiss
             </button>

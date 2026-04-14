@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { DM_Sans, JetBrains_Mono } from "next/font/google";
 import { Providers } from "@/components/providers";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"] });
+const dmSans = DM_Sans({ subsets: ["latin"], variable: "--font-sans" });
+const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
-  title: "DIEM Staking",
-  description: "Stake DIEM to earn USDC or compounding DIEM yield",
+  title: "DIEM Staking — CheapTokens.ai",
+  description: "Stake DIEM to earn USDC via discounted AI compute",
 };
 
 export default function RootLayout({
@@ -17,7 +18,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className={`${inter.className} antialiased min-h-screen`}>
+      <body className={`${dmSans.variable} ${jetbrainsMono.variable} font-sans antialiased min-h-screen`}>
         <Providers>{children}</Providers>
       </body>
     </html>

@@ -98,7 +98,7 @@ export function SDiemCard() {
           <button
             onClick={() => claimAction.claim()}
             disabled={claiming || sdiem.paused}
-            className="w-full rounded-xl border border-gold/40 py-2.5 text-sm font-medium text-gold transition hover:bg-gold/10 disabled:opacity-40"
+            className="w-full rounded-xl border border-accent/40 py-2.5 text-sm font-medium text-accent transition hover:bg-accent/10 disabled:opacity-40"
           >
             {claiming ? "Claiming..." : "Claim USDC"}
           </button>

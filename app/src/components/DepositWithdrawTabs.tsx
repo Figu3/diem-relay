@@ -24,8 +24,8 @@ export function DepositWithdrawTabs({ tabs }: DepositWithdrawTabsProps) {
             onClick={() => setActive(i)}
             className={`flex-1 rounded-md py-1.5 text-xs font-medium transition ${
               active === i
-                ? "bg-gold text-black"
-                : "text-gray-400 hover:text-gray-200"
+                ? "bg-accent text-black"
+                : "text-[#888] hover:text-gray-200"
             }`}
           >
             {tab.label}

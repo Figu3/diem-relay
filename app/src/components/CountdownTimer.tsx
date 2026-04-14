@@ -33,12 +33,12 @@ export function CountdownTimer({ periodFinish }: CountdownTimerProps) {
   return (
     <div className="text-right">
       <span
-        className={`font-mono text-sm ${expired ? "text-gray-500" : "text-gray-100"}`}
+        className={`font-mono text-sm ${expired ? "text-[#555]" : "text-gray-100"}`}
       >
         {formatTime(remaining)}
       </span>
       {expired && (
-        <span className="ml-1.5 text-xs text-gray-500">expired</span>
+        <span className="ml-1.5 text-xs text-[#555]">expired</span>
       )}
     </div>
   );

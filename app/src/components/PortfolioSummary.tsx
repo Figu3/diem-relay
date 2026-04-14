@@ -22,8 +22,8 @@ export function PortfolioSummary() {
     <div className="mx-6 mb-6 grid grid-cols-2 gap-3 rounded-xl border border-border bg-card p-4 sm:grid-cols-3">
       {stats.map((s) => (
         <div key={s.label}>
-          <p className="text-xs text-gray-500">{s.label}</p>
-          <p className="text-sm font-medium text-gray-100">{s.value}</p>
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-[#555]">{s.label}</p>
+          <p className="font-mono text-sm font-medium text-gray-100">{s.value}</p>
         </div>
       ))}
     </div>
