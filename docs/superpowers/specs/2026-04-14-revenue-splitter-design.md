@@ -171,11 +171,11 @@ function distribute() external nonReentrant {
 1. **Deploy** `RevenueSplitter` with:
    - `USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
    - `sdiem = 0xdbF05AF4fdAA518AC9c4dc5aA49399b8dd0B4be2`
-   - `platformReceiver = <2/2 Safe>` (provided at deploy)
-   - `admin = <2/2 Safe>`
+   - `platformReceiver = 0x01Ea790410D9863A57771D992D2A72ea326DD7C9` (2/2 Safe — same address that currently administers sDIEM and acts as its Operator)
+   - `admin = 0x01Ea790410D9863A57771D992D2A72ea326DD7C9`
 
-2. **One-time admin ops on sDIEM** (`0x01Ea...D7C9` calls):
-   - `sdiem.setOperator(splitter)` — splitter becomes the sole `notifyRewardAmount` caller
+2. **One-time admin ops on sDIEM** (Safe `0x01Ea...D7C9` executes a 2/2-signed tx):
+   - `sdiem.setOperator(splitter)` — splitter becomes the sole `notifyRewardAmount` caller, replacing the Safe itself. The Safe retains `admin` rights on sDIEM, so it can always rotate the operator back if needed.
 
 3. **atd redirects cheaptokens.ai checkout** to pay USDC directly to splitter address
 
@@ -246,11 +246,10 @@ function distribute() external nonReentrant {
 | Rounding dust | To stakers | Better for UX, admin can't game dust |
 | Pause scope | `distribute()` only | USDC is plain ERC20, can't block receives anyway |
 | Payment path | Direct — customers pay splitter | Non-custodial, no trust in upstream wallet |
-| Admin | 2/2 Safe (both admin + platformReceiver) | Matches existing protocol pattern |
+| Admin + platformReceiver | 2/2 Safe `0x01Ea790410D9863A57771D992D2A72ea326DD7C9` (verified threshold=2) | Same Safe that administers sDIEM — single source of truth for protocol control |
 | Admin handoff | 2-step `transferAdmin` + `acceptAdmin` | Prevents accidentally locking to wrong address |
 
 ## Open Items
 
-- **Safe address** to be provided at deploy time by user
-- **sDIEM operator swap**: need to coordinate with sDIEM admin (`0x01Ea...D7C9`) to call `setOperator(splitter)` after deploy
-- **cheaptokens.ai checkout update**: atd must update the payment address to splitter after deploy
+- **sDIEM operator swap**: Safe must sign `sdiem.setOperator(splitter)` 2/2 tx after deploy (swap from Safe-as-operator → splitter-as-operator)
+- **cheaptokens.ai checkout update**: atd must update the payment address to the deployed splitter contract
