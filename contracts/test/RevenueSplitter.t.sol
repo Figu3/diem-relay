@@ -106,4 +106,43 @@ contract RevenueSplitterTest is Test {
         vm.expectRevert(bytes("RS: not admin"));
         splitter.pause();
     }
+
+    function test_setPlatformReceiver_worksForAdmin() public {
+        address newReceiver = address(0xFEED);
+        vm.prank(admin);
+        splitter.setPlatformReceiver(newReceiver);
+        assertEq(splitter.platformReceiver(), newReceiver);
+    }
+
+    function test_setPlatformReceiver_revertsForNonAdmin() public {
+        vm.prank(anyone);
+        vm.expectRevert(bytes("RS: not admin"));
+        splitter.setPlatformReceiver(address(0xFEED));
+    }
+
+    function test_setPlatformReceiver_rejectsZero() public {
+        vm.prank(admin);
+        vm.expectRevert(bytes("RS: zero receiver"));
+        splitter.setPlatformReceiver(address(0));
+    }
+
+    function test_setMinAmount_bounded() public {
+        vm.prank(admin);
+        splitter.setMinAmount(500e6);
+        assertEq(splitter.minAmount(), 500e6);
+
+        vm.prank(admin);
+        vm.expectRevert(bytes("RS: min too high"));
+        splitter.setMinAmount(20_000e6); // exceeds MIN_AMOUNT_CAP
+    }
+
+    function test_setCooldown_bounded() public {
+        vm.prank(admin);
+        splitter.setCooldown(12 hours);
+        assertEq(splitter.cooldown(), 12 hours);
+
+        vm.prank(admin);
+        vm.expectRevert(bytes("RS: cooldown too high"));
+        splitter.setCooldown(30 days);
+    }
 }

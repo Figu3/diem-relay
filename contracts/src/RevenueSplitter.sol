@@ -105,16 +105,23 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
 
     // Unimplemented stubs — filled in by later tasks via TDD.
 
-    function setPlatformReceiver(address) external override {
-        revert("RS: not implemented");
+    // Admin — config setters
+    function setPlatformReceiver(address newReceiver) external override onlyAdmin {
+        require(newReceiver != address(0), "RS: zero receiver");
+        platformReceiver = newReceiver;
+        emit PlatformReceiverSet(newReceiver);
     }
 
-    function setMinAmount(uint256) external override {
-        revert("RS: not implemented");
+    function setMinAmount(uint256 newMinAmount) external override onlyAdmin {
+        require(newMinAmount <= MIN_AMOUNT_CAP, "RS: min too high");
+        minAmount = newMinAmount;
+        emit MinAmountSet(newMinAmount);
     }
 
-    function setCooldown(uint256) external override {
-        revert("RS: not implemented");
+    function setCooldown(uint256 newCooldown) external override onlyAdmin {
+        require(newCooldown <= MAX_COOLDOWN, "RS: cooldown too high");
+        cooldown = newCooldown;
+        emit CooldownSet(newCooldown);
     }
 
     // Admin — pause
