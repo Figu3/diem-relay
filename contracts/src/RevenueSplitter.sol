@@ -80,10 +80,30 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         cooldown = DEFAULT_COOLDOWN;
     }
 
-    // Unimplemented stubs — filled in by later tasks via TDD.
-    function distribute() external override {
-        revert("RS: not implemented");
+    // Core
+    function distribute() external override nonReentrant whenNotPaused {
+        require(block.timestamp >= lastDistribution + cooldown, "RS: cooldown");
+
+        uint256 bal = USDC.balanceOf(address(this));
+        require(bal >= minAmount, "RS: below min");
+
+        uint256 platformCut = (bal * PLATFORM_BPS) / BPS_DENOMINATOR;
+        uint256 stakerCut = bal - platformCut;
+
+        // Effects
+        lastDistribution = block.timestamp;
+        totalPlatformPaid += platformCut;
+        totalStakerPaid += stakerCut;
+
+        // Interactions
+        USDC.safeTransfer(platformReceiver, platformCut);
+        USDC.forceApprove(address(sdiem), stakerCut);
+        sdiem.notifyRewardAmount(stakerCut);
+
+        emit Distributed(msg.sender, platformCut, stakerCut, block.timestamp);
     }
+
+    // Unimplemented stubs — filled in by later tasks via TDD.
 
     function setPlatformReceiver(address) external override {
         revert("RS: not implemented");
