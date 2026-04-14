@@ -80,4 +80,30 @@ contract RevenueSplitterTest is Test {
         assertEq(usdc.balanceOf(receiver), 200_000_000, "platform truncated");
         assertEq(sdiem.totalNotified(), 800_000_001, "staker gets dust");
     }
+
+    function test_pause_blocksDistribute() public {
+        usdc.mint(address(splitter), 1_000e6);
+        vm.prank(admin);
+        splitter.pause();
+
+        vm.expectRevert(bytes("RS: paused"));
+        splitter.distribute();
+    }
+
+    function test_unpause_restoresDistribute() public {
+        usdc.mint(address(splitter), 1_000e6);
+        vm.startPrank(admin);
+        splitter.pause();
+        splitter.unpause();
+        vm.stopPrank();
+
+        splitter.distribute();
+        assertEq(usdc.balanceOf(receiver), 200e6);
+    }
+
+    function test_pause_revertsForNonAdmin() public {
+        vm.prank(anyone);
+        vm.expectRevert(bytes("RS: not admin"));
+        splitter.pause();
+    }
 }

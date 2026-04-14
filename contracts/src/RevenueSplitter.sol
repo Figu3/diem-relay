@@ -117,12 +117,17 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         revert("RS: not implemented");
     }
 
-    function pause() external override {
-        revert("RS: not implemented");
+    // Admin — pause
+    function pause() external override onlyAdmin {
+        require(!paused, "RS: already paused");
+        paused = true;
+        emit Paused(msg.sender);
     }
 
-    function unpause() external override {
-        revert("RS: not implemented");
+    function unpause() external override onlyAdmin {
+        require(paused, "RS: not paused");
+        paused = false;
+        emit Unpaused(msg.sender);
     }
 
     function rescueToken(address, address, uint256) external override {
