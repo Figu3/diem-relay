@@ -171,4 +171,33 @@ contract RevenueSplitterTest is Test {
         vm.expectRevert(bytes("RS: not admin"));
         splitter.rescueToken(address(rando), anyone, 1 ether);
     }
+
+    function test_transferAdmin_twoStep() public {
+        address newAdmin = address(0xD00D);
+
+        vm.prank(admin);
+        splitter.transferAdmin(newAdmin);
+        assertEq(splitter.pendingAdmin(), newAdmin);
+        assertEq(splitter.admin(), admin, "still old admin");
+
+        vm.prank(newAdmin);
+        splitter.acceptAdmin();
+        assertEq(splitter.admin(), newAdmin);
+        assertEq(splitter.pendingAdmin(), address(0));
+    }
+
+    function test_acceptAdmin_revertsForNonPending() public {
+        vm.prank(admin);
+        splitter.transferAdmin(address(0xD00D));
+
+        vm.prank(anyone);
+        vm.expectRevert(bytes("RS: not pending admin"));
+        splitter.acceptAdmin();
+    }
+
+    function test_transferAdmin_revertsForNonAdmin() public {
+        vm.prank(anyone);
+        vm.expectRevert(bytes("RS: not admin"));
+        splitter.transferAdmin(anyone);
+    }
 }

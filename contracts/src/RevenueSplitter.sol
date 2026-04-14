@@ -145,11 +145,17 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         emit TokenRescued(token, to, amount);
     }
 
-    function transferAdmin(address) external override {
-        revert("RS: not implemented");
+    // Admin — transfer
+    function transferAdmin(address newAdmin) external override onlyAdmin {
+        require(newAdmin != address(0), "RS: zero new admin");
+        pendingAdmin = newAdmin;
+        emit AdminTransferStarted(newAdmin);
     }
 
     function acceptAdmin() external override {
-        revert("RS: not implemented");
+        require(msg.sender == pendingAdmin, "RS: not pending admin");
+        admin = pendingAdmin;
+        pendingAdmin = address(0);
+        emit AdminTransferAccepted(msg.sender);
     }
 }
