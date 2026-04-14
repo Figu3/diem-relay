@@ -40,4 +40,26 @@ contract RevenueSplitterTest is Test {
         assertEq(splitter.totalPlatformPaid(), 200e6);
         assertEq(splitter.totalStakerPaid(), 800e6);
     }
+
+    function test_distribute_revertsDuringCooldown() public {
+        usdc.mint(address(splitter), 1_000e6);
+        splitter.distribute();
+
+        // Second distribution immediately → revert
+        usdc.mint(address(splitter), 1_000e6);
+        vm.expectRevert(bytes("RS: cooldown"));
+        splitter.distribute();
+
+        // Warp past cooldown → succeeds
+        vm.warp(block.timestamp + 23 hours);
+        splitter.distribute();
+        assertEq(splitter.totalPlatformPaid(), 400e6);
+    }
+
+    function test_distribute_firstCallHasNoCooldown() public {
+        // lastDistribution == 0 initially, so first call should work
+        usdc.mint(address(splitter), 1_000e6);
+        splitter.distribute();
+        assertGt(splitter.totalPlatformPaid(), 0);
+    }
 }
