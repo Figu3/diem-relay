@@ -137,8 +137,12 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         emit Unpaused(msg.sender);
     }
 
-    function rescueToken(address, address, uint256) external override {
-        revert("RS: not implemented");
+    // Admin — rescue
+    function rescueToken(address token, address to, uint256 amount) external override onlyAdmin {
+        require(token != address(USDC), "RS: cannot rescue USDC");
+        require(to != address(0), "RS: zero to");
+        IERC20(token).safeTransfer(to, amount);
+        emit TokenRescued(token, to, amount);
     }
 
     function transferAdmin(address) external override {

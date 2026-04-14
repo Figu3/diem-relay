@@ -145,4 +145,30 @@ contract RevenueSplitterTest is Test {
         vm.expectRevert(bytes("RS: cooldown too high"));
         splitter.setCooldown(30 days);
     }
+
+    function test_rescueToken_rescuesRandomToken() public {
+        MockERC20 rando = new MockERC20("RND", "RND", 18);
+        rando.mint(address(splitter), 1 ether);
+
+        vm.prank(admin);
+        splitter.rescueToken(address(rando), admin, 1 ether);
+
+        assertEq(rando.balanceOf(admin), 1 ether);
+        assertEq(rando.balanceOf(address(splitter)), 0);
+    }
+
+    function test_rescueToken_revertsForUSDC() public {
+        usdc.mint(address(splitter), 1_000e6);
+        vm.prank(admin);
+        vm.expectRevert(bytes("RS: cannot rescue USDC"));
+        splitter.rescueToken(address(usdc), admin, 1_000e6);
+    }
+
+    function test_rescueToken_revertsForNonAdmin() public {
+        MockERC20 rando = new MockERC20("RND", "RND", 18);
+        rando.mint(address(splitter), 1 ether);
+        vm.prank(anyone);
+        vm.expectRevert(bytes("RS: not admin"));
+        splitter.rescueToken(address(rando), anyone, 1 ether);
+    }
 }
