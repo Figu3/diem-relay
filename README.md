@@ -111,7 +111,7 @@ app/                        Staking UI (Next.js / wagmi / RainbowKit)
 cd contracts
 forge install
 forge build
-forge test            # 190 tests (unit, fuzz, invariant)
+forge test            # 212 tests across 8 suites (unit, fuzz, invariant, fork)
 ```
 
 ## Deployment
@@ -121,8 +121,10 @@ All contracts are deployed on **Base** (chain ID 8453).
 | Contract | Address |
 |---|---|
 | **DIEMVault** | `0xdc9625b026f6Dd17F9d96e608592A9C592e27eEF` |
-| **sDIEM** | `0x59650b79eF4c2eC193B49DbFc23d50d48EBf9f34` |
-| **sDIEM** (old, bricked) | `0x9566a919c7A4a7b22243736f39781A2787ddC11e` |
+| **sDIEM** | `0xdbF05AF4fdAA518AC9c4dc5aA49399b8dd0B4be2` |
+| **RevenueSplitter** | `0xd185138CEA135E60CA6E567BE53DEC81D89Ce7D6` |
+| sDIEM (superseded) | `0x59650b79eF4c2eC193B49DbFc23d50d48EBf9f34` |
+| sDIEM (superseded) | `0x9566a919c7A4a7b22243736f39781A2787ddC11e` |
 
 Deploy scripts:
 
@@ -178,7 +180,7 @@ Pashov AI deep audit (March 2026). 2 Critical findings remediated: `totalPending
 
 ### Test Coverage
 
-190 tests across 6 suites: unit, fuzz, and invariant testing. Key invariants verified:
+212 tests across 8 suites: unit, fuzz, invariant, and Base-fork integration tests. Key invariants verified:
 - Sum of staker balances equals `totalStaked`.
 - Sum of borrower balances equals `totalDeposits`.
 - csDIEM `totalAssets` accounts for all DIEM positions (staked + pending + liquid - owed).
