@@ -1,8 +1,10 @@
 # DIEM Staking Protocol — Auditor Briefing
 
-> Target: 3 Solidity 0.8.24 contracts (~1,363 LOC total)
+> Target: 4 Solidity 0.8.24 contracts (~1,524 LOC total)
 > Chain: Base (Aerodrome DEX for swaps/oracle)
 > Dependencies: OpenZeppelin 5.x, Aerodrome Router/Pool, Venice DIEM staking
+>
+> **Note on scope**: The previous Bretzel + Pashov AI audits (March 2026) covered sDIEM, csDIEM, and DIEMVault. **RevenueSplitter (April 2026) has not been externally audited** and is included here for completeness.
 
 ---
 
@@ -29,8 +31,14 @@
           │ (USDC transfer from operator)       (DIEM transfer)
           │                                                   │
           └───────────────────────────────────────────────────┘
-            Revenue currently seeded manually by operator.
-            RevenueSplitter planned for Phase 2 (auto-distribution).
+
+    ┌───────────────────────┐
+    │   RevenueSplitter     │  Receives USDC from cheaptokens.ai customers.
+    │                       │  Anyone calls distribute() → 20% to platform Safe,
+    │   20% → 2/2 Safe      │  80% to sDIEM via notifyRewardAmount() (24h stream).
+    │   80% → sDIEM         │  23h cooldown + minAmount floor prevent stream
+    │   (permissionless)    │  fragmentation. Splitter is sDIEM's Operator.
+    └───────────────────────┘
 
     ┌───────────────┐
     │  DIEMVault    │  (Standalone — no interaction with staking contracts)
@@ -47,6 +55,7 @@
 | `sDIEM.sol` | 631 | ReentrancyGuard | Synthetix StakingRewards fork, Venice forward-staking, batched async withdrawals |
 | `csDIEM.sol` | 556 | OZ ERC4626 | Virtual shares (1e6 offset), async redemption, Venice forward-staking |
 | `DIEMVault.sol` | 176 | ReentrancyGuard | Deposit-only, reserve segregation |
+| `RevenueSplitter.sol` | 161 | ReentrancyGuard | Permissionless 20/80 splitter, immutable USDC + sDIEM, non-rug USDC rescue, 2-step admin |
 
 ## 3. Trust Assumptions
 
@@ -78,12 +87,31 @@ The admin **cannot**:
 
 ### Operator Trust (sDIEM only)
 
-The operator can:
-- Call `notifyRewardAmount()` to seed USDC reward periods
+The operator is the deployed `RevenueSplitter` contract. As such:
 
-The operator **cannot**:
-- Pause, change admin, recover tokens, or modify any parameters
-- Notify rewards exceeding the contract's actual USDC balance (sanity check enforced)
+The operator can:
+- Call `notifyRewardAmount()` to seed USDC reward periods (only via `distribute()`)
+
+The operator **cannot** (enforced by RevenueSplitter code):
+- Arbitrarily choose amounts — `distribute()` always sends the full current USDC balance
+- Redirect the staker share — `notifyRewardAmount` is the only sink
+- Change sDIEM parameters, pause sDIEM, or recover tokens
+
+The sDIEM admin (2/2 Safe) can rotate the operator via `setOperator()` if the RevenueSplitter needs to be replaced.
+
+### RevenueSplitter Trust
+
+The RevenueSplitter admin (2/2 Safe — same as sDIEM/csDIEM admin) can:
+- Rotate `platformReceiver` (e.g., if Circle blacklists the Safe)
+- Adjust `minAmount` (floor capped at 10,000 USDC, must be > 0)
+- Adjust `cooldown` (capped at 7 days)
+- Pause/unpause the `distribute()` function
+- Rescue non-USDC tokens accidentally sent to the contract
+
+The admin **cannot**:
+- Rescue USDC — blocked by `require(token != address(USDC))` in `rescueToken()`
+- Change the 20/80 split — ratios are constants (redeploy required to change)
+- Bypass `distribute()` to access customer USDC directly
 
 ## 4. Contract Interaction Flows
 
@@ -121,17 +149,24 @@ User                   csDIEM                   Venice
 
 **Share price increase**: Operator or keeper calls `csdiem.donate(diemAmount)` which increases `totalAssets()` without minting shares → share price goes up. (Phase 2: RevenueSplitter will automate this.)
 
-### 4.3 Revenue Seeding (Phase 1 — Manual)
+### 4.3 Revenue Seeding (automated via RevenueSplitter)
 
 ```
-Operator                sDIEM
-  │                       │
-  │── USDC.approve() ────→│
-  │── notifyRewardAmount()→│  pulls USDC, starts 24h linear stream
-  │                       │  returns rounding dust to operator
+Customer                RevenueSplitter            sDIEM
+  │                         │                       │
+  │── USDC.transfer() ─────→│                       │
+  │         (checkout)      │                       │
+                            │                       │
+  Anyone calls distribute():│                       │
+  ─────────────────────────→│                       │
+                            │── USDC.transfer() ───→ 2/2 Safe   (20%)
+                            │── forceApprove(sDIEM) │
+                            │── notifyRewardAmount()→│          (80%)
+                            │                       │  pulls USDC, 24h stream
+                            │                       │  returns rounding dust
 ```
 
-Revenue is currently seeded manually by the operator. A RevenueSplitter contract (splitting USDC between sDIEM and csDIEM with on-chain swaps) is planned for Phase 2.
+Revenue arrives at the RevenueSplitter directly from customers. Anyone can call `distribute()` once the balance is at least `minAmount` and at least `cooldown` seconds have passed since the last call. The splitter is the sole operator of sDIEM, so `notifyRewardAmount()` is reachable only through `distribute()`.
 
 ### 4.4 USDC Deposit (DIEMVault)
 
@@ -216,6 +251,15 @@ If Venice changes its interface or imposes limits, all deposits/withdrawals are 
 
 When `requestWithdraw()` is called while Venice has an active cooldown, `_tryInitiateVeniceUnstake()` returns silently and the amount is tracked in `totalPendingNotInitiated`. The M-02 fix ensures `completeWithdraw()` calls `_tryInitiateVeniceUnstake()` **before** the payout check, so the deferred batch gets kicked off. Without this, `completeWithdraw()` would revert permanently for those users.
 
+### 6.5 RevenueSplitter — DoS via external dependencies
+
+`distribute()` can be DoS'd by:
+- Circle blacklisting `platformReceiver` → admin rotates receiver (2/2 Safe tx)
+- sDIEM being paused → same 2/2 Safe controls both contracts; pause is deliberate
+- Attacker front-running with a tiny batch just above `minAmount` → stakers still receive the full rewards, but in smaller fragmented streams. Mitigate by raising `minAmount` via admin.
+
+These are accepted operational concerns. See `KNOWN_ISSUES.md` K-8.
+
 ## 7. Compiler & Toolchain
 
 | Setting | Value |
@@ -233,10 +277,12 @@ src/
 ├── sDIEM.sol              # Staking rewards (631 LOC)
 ├── csDIEM.sol             # Compounding vault (556 LOC)
 ├── DIEMVault.sol          # USDC deposit vault (176 LOC)
+├── RevenueSplitter.sol    # 20/80 USDC splitter (161 LOC)
 └── interfaces/
     ├── IsDIEM.sol
     ├── IcsDIEM.sol
     ├── IDIEMVault.sol
+    ├── IRevenueSplitter.sol
     ├── IDIEMStaking.sol       # Venice staking interface
     ├── ICLSwapRouter.sol      # Aerodrome Slipstream CL router
     └── ICLPool.sol            # Aerodrome Slipstream CL pool

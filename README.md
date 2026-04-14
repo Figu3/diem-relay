@@ -12,22 +12,28 @@ Deployed on **Base**. Built with Foundry (Solidity 0.8.24).
                      │   (sold via cheaptokens.ai)   │
                      └──────────────┬───────────────┘
                                     │ USDC revenue
-                                    │
-                         notifyRewardAmount()
-                                    │
-                     ┌──────────────▼───────────────┐
-                     │            sDIEM              │
-                     │   Synthetix StakingRewards    │
-                     │   Stake DIEM → earn USDC      │
-                     │   24h linear reward stream    │
-                     └──────────────┬───────────────┘
-                                    │
-                     ┌──────────────▼───────────────┐
-                     │           csDIEM              │
-                     │     ERC-4626 Compounder       │
-                     │  Claims USDC → swaps → DIEM   │
-                     │     Restakes into sDIEM       │
-                     └──────────────────────────────┘
+                                    ▼
+                     ┌──────────────────────────────┐
+                     │       RevenueSplitter         │
+                     │   Receives USDC from customers│
+                     │     20% → platform Safe       │
+                     │     80% → sDIEM stakers       │
+                     │   Permissionless distribute() │
+                     └──────┬─────────────────┬─────┘
+                     20%    │             80% │ notifyRewardAmount()
+                            ▼                 ▼
+                     ┌──────────┐    ┌──────────────────┐
+                     │ 2/2 Safe │    │      sDIEM       │
+                     │ (platform│    │ Synthetix fork   │
+                     │  fees)   │    │ Earn USDC (24h)  │
+                     └──────────┘    └────────┬─────────┘
+                                              │
+                                              ▼
+                                     ┌──────────────────┐
+                                     │      csDIEM      │
+                                     │   ERC-4626       │
+                                     │   Auto-compound  │
+                                     └──────────────────┘
 ```
 
 ### Contracts
@@ -36,6 +42,7 @@ Deployed on **Base**. Built with Foundry (Solidity 0.8.24).
 |---|---|
 | **sDIEM** | Synthetix StakingRewards fork. Stake DIEM, earn USDC rewards streamed linearly over 24h. All staked DIEM is forward-staked on Venice for compute credits. 24h async withdrawals matching Venice's unstake cooldown. |
 | **csDIEM** | ERC-4626 auto-compounding vault wrapping sDIEM. Claims USDC rewards, swaps USDC to DIEM via Aerodrome Slipstream CL (with TWAP oracle protection), restakes DIEM into sDIEM. For users who want compounding exposure rather than USDC yield. Compatible with Pendle, Morpho, Silo. |
+| **RevenueSplitter** | Receives USDC revenue from cheaptokens.ai customers and splits it 20% to the platform 2/2 Safe and 80% to sDIEM stakers via `notifyRewardAmount`. Permissionless `distribute()` with a 23h cooldown and minimum-amount floor to prevent reward-stream fragmentation. |
 | **DIEMVault** | USDC deposit vault for the DIEM Relay service. Borrowers deposit USDC on-chain; an off-chain watcher credits relay accounts. Deposit-only (Phase 1). |
 
 ### Revenue Loop
@@ -44,12 +51,12 @@ Deployed on **Base**. Built with Foundry (Solidity 0.8.24).
 Stake DIEM → sDIEM
          → forward-staked on Venice ($1/day compute per staked DIEM)
          → compute sold via cheaptokens.ai
-         → USDC revenue
-         → notifyRewardAmount() on sDIEM
+         → USDC revenue lands on RevenueSplitter
+         → distribute(): 20% → 2/2 Safe, 80% → sDIEM.notifyRewardAmount()
          → streamed to stakers over 24h
 ```
 
-All USDC revenue goes directly to sDIEM. csDIEM users get compounding by harvesting their share of USDC rewards and swapping back to DIEM.
+USDC revenue lands directly on the RevenueSplitter contract. Anyone can trigger `distribute()` once the balance exceeds the minimum floor and the 23h cooldown has elapsed. The splitter is the only authorized operator for `sDIEM.notifyRewardAmount()`. csDIEM users get compounding by harvesting their share of USDC rewards and swapping back to DIEM.
 
 ### Venice Forward-Staking
 
@@ -77,10 +84,12 @@ contracts/
   src/
     sDIEM.sol               Stake DIEM, earn USDC (Synthetix model)
     csDIEM.sol              Auto-compounding ERC-4626 vault over sDIEM
+    RevenueSplitter.sol     20/80 USDC splitter: Safe + sDIEM
     DIEMVault.sol           USDC deposit vault for relay credits
     interfaces/
       IsDIEM.sol            sDIEM interface
       IcsDIEM.sol           csDIEM interface (extends IERC4626)
+      IRevenueSplitter.sol  RevenueSplitter interface
       IDIEMStaking.sol      DIEM token staking interface (Base)
       IDIEMVault.sol        DIEMVault interface
       ICLSwapRouter.sol     Aerodrome Slipstream CL router interface
@@ -96,11 +105,15 @@ contracts/
     csDIEMInvariant.t.sol   5 invariant tests
     DIEMVault.t.sol         52 unit/fuzz tests
     DIEMVaultInvariant.t.sol 3 invariant tests
-    mocks/                  MockDIEMStaking, MockERC20, MockSwapRouter, MockCLPool
+    RevenueSplitter.t.sol   20 unit/fuzz tests
+    RevenueSplitterInvariant.t.sol  2 invariant tests
+    RevenueSplitterFork.t.sol  1 Base-fork integration test
+    mocks/                  MockDIEMStaking, MockERC20, MockSwapRouter, MockCLPool, MockSDiem
   script/
-    DeploySDiem.s.sol       sDIEM deployment
-    DeployCSDiem.s.sol      csDIEM deployment
-    DeployDIEMVault.s.sol   DIEMVault deployment
+    DeploySDiem.s.sol             sDIEM deployment
+    DeployCSDiem.s.sol            csDIEM deployment
+    DeployDIEMVault.s.sol         DIEMVault deployment
+    DeployRevenueSplitter.s.sol   RevenueSplitter deployment
 src/                        Relay server (TypeScript / Bun / Hono)
 app/                        Staking UI (Next.js / wagmi / RainbowKit)
 ```
@@ -142,7 +155,13 @@ OPERATOR=0x... forge script script/DeployCSDiem.s.sol \
 # DIEMVault
 forge script script/DeployDIEMVault.s.sol \
   --rpc-url $BASE_RPC_URL --broadcast --verify
+
+# RevenueSplitter (addresses default to Base mainnet + 2/2 Safe)
+forge script script/DeployRevenueSplitter.s.sol \
+  --rpc-url $BASE_RPC_URL --broadcast --verify
 ```
+
+After RevenueSplitter deployment, the sDIEM admin must call `sDIEM.setOperator(splitter)` so the splitter becomes the sole caller of `notifyRewardAmount`.
 
 ## Security
 
@@ -177,6 +196,8 @@ forge script script/DeployDIEMVault.s.sol \
 Audited by Bretzel (March 2026). 0 Critical, 0 High, 1 Medium, 1 Low, 4 Informational. All findings remediated.
 
 Pashov AI deep audit (March 2026). 2 Critical findings remediated: `totalPendingNotInitiated` accounting fix, withdrawal timer bypass fix.
+
+**RevenueSplitter has not yet been externally audited.** It passed an internal adversarial pass (Pashov AI skill, April 2026); one Low finding was remediated (zero-`minAmount` cooldown-reset grief). See `contracts/KNOWN_ISSUES.md` K-8. An external review is recommended before scaling customer revenue through it.
 
 ### Test Coverage
 

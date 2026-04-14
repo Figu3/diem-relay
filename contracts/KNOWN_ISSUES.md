@@ -8,10 +8,10 @@
 ## Architecture Overview
 
 ```
-Revenue Flow (Phase 1 — manual):
-  Venice compute credits → USDC revenue → operator calls notifyRewardAmount()
-                                            └─ sDIEM  (linear USDC rewards)
-  (Phase 2: RevenueSplitter will auto-split to sDIEM + csDIEM)
+Revenue Flow (automated via RevenueSplitter):
+  cheaptokens.ai customer USDC payments → RevenueSplitter
+                                            ├─ 20% → 2/2 Safe (platform)
+                                            └─ 80% → sDIEM.notifyRewardAmount (24h stream)
 
 Staking Flow:
   User DIEM → sDIEM/csDIEM → Venice forward-stake (compute credits)
@@ -28,14 +28,16 @@ Deposit Flow (Phase 1):
 | `sDIEM.sol` | ~631 | Synthetix StakingRewards fork; deposit DIEM, earn USDC |
 | `csDIEM.sol` | ~556 | ERC-4626 compounding vault; deposit DIEM, share price grows |
 | `DIEMVault.sol` | ~176 | Phase 1 USDC deposit-only vault for relay |
+| `RevenueSplitter.sol` | ~161 | 20/80 USDC splitter: Safe + sDIEM (see K-8 below) |
 
 ### Privileged Roles
 
 | Role | Scope | Capabilities |
 |------|-------|-------------|
 | **Admin** (all contracts) | Protocol governance | Pause/unpause, set parameters, two-step transfer, token recovery |
-| **Operator** (sDIEM) | Reward seeding | `notifyRewardAmount()` only — cannot pause, change admin, or recover tokens |
+| **Operator** (sDIEM) | Reward seeding | `notifyRewardAmount()` only. Deployed operator is the RevenueSplitter contract (not an EOA), so rewards are auto-forwarded from customer USDC receipts. |
 | **Operator** (csDIEM) | Reserved | Field exists but unused in Phase 1 |
+| **Admin** (RevenueSplitter) | Revenue-flow governance | Same 2/2 Safe. Can rotate `platformReceiver`, adjust `minAmount`/`cooldown` (within bounds), pause, and rescue non-USDC tokens. Cannot rescue USDC and cannot change the 20/80 ratio. |
 
 ---
 
@@ -155,6 +157,28 @@ to zero.
 
 ---
 
+### K-8: RevenueSplitter — Not Yet Externally Audited (Informational)
+
+**Description**: `RevenueSplitter.sol` was deployed in April 2026 and has **not** been covered by the Bretzel or Pashov AI external audits (which were scoped to sDIEM, csDIEM, and DIEMVault as of March 2026).
+
+**Internal review only**: The contract passed an in-house adversarial pass using the Pashov AI `solidity-auditor` skill on 2026-04-14. Findings:
+
+- **Remediated**: `setMinAmount(0)` was permitted by the bounds check, which would have let an admin misconfiguration enable an attacker to call `distribute()` with zero balance, resetting the cooldown for up to 7 days with no payout. Fixed by adding `require(newMinAmount > 0, "RS: min zero")`.
+- **Accepted (admin-fixable)**: If Circle blacklists `platformReceiver`, every `distribute()` reverts on `safeTransfer`. Mitigation: the 2/2 Safe rotates the receiver via `setPlatformReceiver`.
+- **Accepted (operational)**: A griefer can trigger `distribute()` the moment the balance crosses `minAmount`, fragmenting the staker reward stream into small batches. Stakers still receive all funds. Mitigation: admin raises `minAmount`.
+- **Not a real finding**: sDIEM being paused would DoS `distribute()` — but the same 2/2 Safe admins both contracts, so any pause is deliberate.
+
+**Impact**: The remediated grief vector was the only issue that could cause incorrect behavior. The other three are operational concerns, not exploits.
+
+**Accepted because**:
+- An external review is recommended before meaningful customer revenue flows through the contract — explicitly called out in the README Security section.
+- The attack surface is small (~161 LOC, no loops, no oracles, no swaps).
+- `rescueToken()` explicitly blocks USDC, so the admin cannot drain customer payments.
+- The split ratio is hardcoded (`PLATFORM_BPS = 2000`, `STAKER_BPS = 8000`); changing it requires redeploy.
+- All setters have bounded admin mutability (`MIN_AMOUNT_CAP = 10,000 USDC`, `MAX_COOLDOWN = 7 days`).
+
+---
+
 ### K-7: csDIEM Donation Attack Surface (Informational)
 
 **Description**: Anyone can call `csDIEM.donate()` to increase share price.
@@ -180,7 +204,7 @@ share price, then the depositor gets fewer shares.
 | Venice protocol internals | Third-party dependency; audited separately |
 | Aerodrome protocol internals | Third-party dependency; audited separately |
 | DIEM token contract itself | Pre-existing, not modified in this scope |
-| Phase 2 features (DIEMVault withdrawals, RevenueSplitter, bridges) | Not yet implemented |
+| DIEMVault withdrawals, bridges | Not yet implemented (Phase 2) |
 | Keeper/bot infrastructure | Off-chain operational concern |
 
 ---
@@ -213,3 +237,11 @@ share price, then the depositor gets fewer shares.
 2. `Σ(borrowerBalance[user]) == totalDeposits`
 3. `totalDeposits` is monotonically non-decreasing (deposit-only)
 4. `protocolFees` is zero in Phase 1 (no fee mechanism yet)
+
+### RevenueSplitter
+
+1. After any `distribute()`, `usdc.balanceOf(splitter)` drops by exactly `platformCut + stakerCut`
+2. `totalPlatformPaid * 10000 <= (totalPlatformPaid + totalStakerPaid) * 2000` — platform share never exceeds 20%
+3. `stakerCut >= (bal * 8000) / 10000` on every distribution — stakers never get less than 80%, rounding dust always flows to stakers
+4. `rescueToken(USDC, ...)` always reverts — USDC is permanently non-rescuable
+5. `admin` cannot change `USDC`, `sdiem`, `PLATFORM_BPS`, or `STAKER_BPS` (immutable / constant)
