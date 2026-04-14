@@ -134,6 +134,10 @@ contract RevenueSplitterTest is Test {
         vm.prank(admin);
         vm.expectRevert(bytes("RS: min too high"));
         splitter.setMinAmount(20_000e6); // exceeds MIN_AMOUNT_CAP
+
+        vm.prank(admin);
+        vm.expectRevert(bytes("RS: min zero"));
+        splitter.setMinAmount(0); // zero blocked to prevent no-op cooldown reset grief
     }
 
     function test_setCooldown_bounded() public {

@@ -103,8 +103,6 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         emit Distributed(msg.sender, platformCut, stakerCut, block.timestamp);
     }
 
-    // Unimplemented stubs — filled in by later tasks via TDD.
-
     // Admin — config setters
     function setPlatformReceiver(address newReceiver) external override onlyAdmin {
         require(newReceiver != address(0), "RS: zero receiver");
@@ -113,6 +111,7 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     }
 
     function setMinAmount(uint256 newMinAmount) external override onlyAdmin {
+        require(newMinAmount > 0, "RS: min zero");
         require(newMinAmount <= MIN_AMOUNT_CAP, "RS: min too high");
         minAmount = newMinAmount;
         emit MinAmountSet(newMinAmount);
