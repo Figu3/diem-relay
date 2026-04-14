@@ -62,4 +62,22 @@ contract RevenueSplitterTest is Test {
         splitter.distribute();
         assertGt(splitter.totalPlatformPaid(), 0);
     }
+
+    function test_distribute_revertsBelowMinAmount() public {
+        usdc.mint(address(splitter), 50e6); // default min is 100 USDC
+        vm.expectRevert(bytes("RS: below min"));
+        splitter.distribute();
+    }
+
+    function test_distribute_roundingDustGoesToStakers() public {
+        // Use a balance that doesn't divide evenly by 10000
+        // 1000.000001 USDC = 1_000_000_001
+        usdc.mint(address(splitter), 1_000_000_001);
+        splitter.distribute();
+
+        // platformCut = (1_000_000_001 * 2000) / 10000 = 200_000_000 (truncated)
+        // stakerCut  = 1_000_000_001 - 200_000_000 = 800_000_001 (gets the dust)
+        assertEq(usdc.balanceOf(receiver), 200_000_000, "platform truncated");
+        assertEq(sdiem.totalNotified(), 800_000_001, "staker gets dust");
+    }
 }
