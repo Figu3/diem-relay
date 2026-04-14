@@ -200,4 +200,15 @@ contract RevenueSplitterTest is Test {
         vm.expectRevert(bytes("RS: not admin"));
         splitter.transferAdmin(anyone);
     }
+
+    function testFuzz_distribute_conservation(uint256 amount) public {
+        amount = bound(amount, 100e6, 1e18); // min to ~1 trillion USDC
+        usdc.mint(address(splitter), amount);
+        splitter.distribute();
+
+        uint256 platform = usdc.balanceOf(receiver);
+        uint256 staker = sdiem.totalNotified();
+        assertEq(platform + staker, amount, "conservation");
+        assertEq(usdc.balanceOf(address(splitter)), 0, "no residual");
+    }
 }
