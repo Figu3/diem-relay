@@ -14,6 +14,7 @@ import { ActionButton } from "./ActionButton";
 import { TxStatus } from "./TxStatus";
 
 import { useSDiem } from "@/hooks/useSDiem";
+import { useDiemPrice } from "@/hooks/useDiemPrice";
 import { useDiemToken } from "@/hooks/useDiemToken";
 import { useApproval } from "@/hooks/useApproval";
 import { useStake } from "@/hooks/useStake";
@@ -27,6 +28,7 @@ import { calcSDiemApr } from "@/lib/apr";
 export function SDiemCard() {
   const { isConnected } = useAccount();
   const sdiem = useSDiem();
+  const { priceUsd: diemPriceUsd } = useDiemPrice();
   const diem = useDiemToken(SDIEM_ADDRESS);
   const approval = useApproval(DIEM_TOKEN, SDIEM_ADDRESS);
   const stakeAction = useStake();
@@ -39,7 +41,7 @@ export function SDiemCard() {
   const [stakeAmt, setStakeAmt] = useState("");
   const [withdrawAmt, setWithdrawAmt] = useState("");
 
-  const apr = calcSDiemApr(sdiem.rewardRate, sdiem.totalStaked);
+  const apr = calcSDiemApr(sdiem.rewardRate, sdiem.totalStaked, diemPriceUsd);
   const needsApproval =
     stakeAmt !== "" &&
     diem.allowance < parseUnits(stakeAmt || "0", DIEM_DECIMALS);
@@ -78,7 +80,7 @@ export function SDiemCard() {
     <VaultCard
       title="sDIEM"
       subtitle="Stake DIEM, earn USDC"
-      badge={apr !== null ? `${apr}% APR` : undefined}
+      badge={apr !== null ? `${apr.toFixed(2)}% APR` : undefined}
     >
       {sdiem.paused && <PausedBanner />}
 

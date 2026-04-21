@@ -1,25 +1,28 @@
 /**
  * Calculate sDIEM APR from on-chain rewardRate and totalStaked.
  *
- * rewardRate = USDC per second (6 decimals)
- * totalStaked = DIEM staked (18 decimals)
+ * rewardRate  = USDC per second (6 decimals)
+ * totalStaked = DIEM staked     (18 decimals)
+ * diemPriceUsd = USD per 1 DIEM (float, from price oracle/API)
  *
- * APR = (rewardRate * 86400 * 365) / totalStaked * (1e18 / 1e6) * 100
- *     = (rewardRate * 31_536_000 * 1e12) / totalStaked * 100
+ * APR (%) = (rewardsPerYearUsd / totalStakedUsd) * 100
  */
 export function calcSDiemApr(
   rewardRate: bigint,
-  totalStaked: bigint
+  totalStaked: bigint,
+  diemPriceUsd: number | null
 ): number | null {
   if (totalStaked === 0n) return null;
+  if (!diemPriceUsd || diemPriceUsd <= 0) return null;
 
   const SECONDS_PER_YEAR = 31_536_000n;
-  const DECIMAL_ADJUSTMENT = 10n ** 12n; // 1e18 / 1e6
-  const PRECISION = 10n ** 4n; // 2 decimal places of APR
+  const rewardsPerYearUsdc = rewardRate * SECONDS_PER_YEAR;
 
-  const aprBps =
-    (rewardRate * SECONDS_PER_YEAR * DECIMAL_ADJUSTMENT * PRECISION * 100n) /
-    totalStaked;
+  const rewardsPerYearUsd = Number(rewardsPerYearUsdc) / 1e6;
+  const totalStakedDiem = Number(totalStaked) / 1e18;
+  const totalStakedUsd = totalStakedDiem * diemPriceUsd;
 
-  return Number(aprBps) / Number(PRECISION);
+  if (totalStakedUsd === 0) return null;
+
+  return (rewardsPerYearUsd / totalStakedUsd) * 100;
 }
