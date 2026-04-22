@@ -10,6 +10,7 @@
     "test:e2e": "bun run src/test-e2e.ts",
     "watcher": "bun run src/deposit-watcher.ts",
     "operator": "bun run src/operator.ts",
+    "keeper:distribute": "bun run src/keeper-distribute.ts",
     "build:contracts": "cd contracts && forge build",
     "test:contracts": "cd contracts && forge test",
     "test": "cd contracts && forge test"
