@@ -544,11 +544,13 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
         uint256 balance = usdc.balanceOf(address(this));
         require(rewardRate <= balance / REWARDS_DURATION, "sDIEM: reward too high");
 
-        // L-01 fix: return rounding dust to caller
+        // L-01 fix: return rounding dust to caller, capped at `reward` so
+        // leftover from a previous period is never refunded to the operator.
         uint256 distributable = rewardRate * REWARDS_DURATION;
         uint256 dust = total - distributable;
-        if (dust > 0) {
-            usdc.safeTransfer(msg.sender, dust);
+        uint256 refund = dust > reward ? reward : dust;
+        if (refund > 0) {
+            usdc.safeTransfer(msg.sender, refund);
         }
 
         lastUpdateTime = block.timestamp;
