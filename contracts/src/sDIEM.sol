@@ -252,8 +252,7 @@ contract sDIEM is IsDIEM, IERC1271, ReentrancyGuard {
      *      liquid DIEM is available (up to the requested amount). If the full
      *      amount isn't available, the remainder stays in the request and
      *      Venice unstake is auto-initiated for the next batch.
-     *      This prevents one user's unfunded withdrawal from blocking others
-     *      (critical for csDIEM which shares a single withdrawal slot).
+     *      This prevents one user's unfunded withdrawal from blocking others.
      */
     function completeWithdraw()
         external

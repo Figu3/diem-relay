@@ -9,13 +9,13 @@
 
 ```
 Revenue Flow (automated via RevenueSplitter):
-  cheaptokens.ai customer USDC payments → RevenueSplitter
-                                            ├─ 20% → 2/2 Safe (platform)
-                                            └─ 80% → sDIEM.notifyRewardAmount (24h stream)
+  Compute customer USDC payments → RevenueSplitter
+                                     ├─ 20% → 2/2 Safe (platform)
+                                     └─ 80% → sDIEM.notifyRewardAmount (24h stream)
 
 Staking Flow:
-  User DIEM → sDIEM/csDIEM → Venice forward-stake (compute credits)
-  Withdrawal: 24h async request → completeWithdraw/Redeem (auto-claims from Venice)
+  User DIEM → sDIEM → Venice forward-stake (compute credits)
+  Withdrawal: 24h async request → completeWithdraw (auto-claims from Venice)
 
 Deposit Flow (Phase 1):
   Borrower USDC → DIEMVault → off-chain relay watcher credits relay account
@@ -26,7 +26,6 @@ Deposit Flow (Phase 1):
 | Contract | LOC | Purpose |
 |----------|-----|---------|
 | `sDIEM.sol` | ~631 | Synthetix StakingRewards fork; deposit DIEM, earn USDC |
-| `csDIEM.sol` | ~556 | ERC-4626 compounding vault; deposit DIEM, share price grows |
 | `DIEMVault.sol` | ~176 | Phase 1 USDC deposit-only vault for relay |
 | `RevenueSplitter.sol` | ~161 | 20/80 USDC splitter: Safe + sDIEM (see K-8 below) |
 
@@ -36,7 +35,6 @@ Deposit Flow (Phase 1):
 |------|-------|-------------|
 | **Admin** (all contracts) | Protocol governance | Pause/unpause, set parameters, two-step transfer, token recovery |
 | **Operator** (sDIEM) | Reward seeding | `notifyRewardAmount()` only. Deployed operator is the RevenueSplitter contract (not an EOA), so rewards are auto-forwarded from customer USDC receipts. |
-| **Operator** (csDIEM) | Reserved | Field exists but unused in Phase 1 |
 | **Admin** (RevenueSplitter) | Revenue-flow governance | Same 2/2 Safe. Can rotate `platformReceiver`, adjust `minAmount`/`cooldown` (within bounds), pause, and rescue non-USDC tokens. Cannot rescue USDC and cannot change the 20/80 ratio. |
 
 ---
@@ -50,7 +48,7 @@ pending unstakes on that contract, not just the new request. When User A
 requests withdrawal at T₀, then User B requests at T₁ (T₁ > T₀), User A's
 cooldown resets to T₁.
 
-**Affected contracts**: sDIEM, csDIEM
+**Affected contracts**: sDIEM
 
 **Impact**: Users who requested earlier may experience unexpected withdrawal
 delays (up to an additional 24h per subsequent request from any user).
@@ -84,7 +82,7 @@ the off-chain relay system to credit their accounts.
 
 ### K-3: DIEMVault Uses Single-Step Admin Transfer (Low)
 
-**Description**: Unlike sDIEM and csDIEM (which use two-step
+**Description**: Unlike sDIEM (which uses two-step
 `transferAdmin`/`acceptAdmin`), DIEMVault uses a single-step `setAdmin()`.
 
 **Impact**: Admin key compromise allows immediate, irrecoverable admin takeover.
@@ -97,32 +95,14 @@ the off-chain relay system to credit their accounts.
 
 ---
 
-### K-4: Aerodrome TWAP Oracle Dependency (Low)
-
-**Description**: csDIEM uses Aerodrome's on-chain TWAP oracle for sandwich
-protection during harvest swaps. If the DIEM/USDC pool becomes illiquid or
-deprecated, TWAP quotes become unreliable.
-
-**Impact**: Swaps could execute at unfavorable rates, or `harvest()` could
-revert if the pool has insufficient observations.
-
-**Accepted because**:
-- Aerodrome is the sole DIEM liquidity venue — if the pool dies, swaps
-  are impossible anyway
-- Admin can update `oraclePool` address if pool migrates
-- TWAP observation window is configurable (minimum 5 minutes)
-- `maxSlippageBps` (capped at 10%) caps worst-case execution
-
----
-
 ### K-5: Withdrawal Liquidity Coordination (Low) — PARTIALLY FIXED
 
-**Description**: `completeWithdraw()` (sDIEM) and `completeRedeem()` (csDIEM)
-require sufficient liquid DIEM in the contract. If `requestWithdraw()` was
-called while Venice had an active cooldown, `_tryInitiateVeniceUnstake()`
-returned silently and the Venice unstake was never initiated. Then
-`completeWithdraw()` reverted ("nothing claimable yet") because the re-trigger
-at the end of the function was unreachable (after the revert).
+**Description**: `completeWithdraw()` (sDIEM) requires sufficient liquid DIEM
+in the contract. If `requestWithdraw()` was called while Venice had an active
+cooldown, `_tryInitiateVeniceUnstake()` returned silently and the Venice
+unstake was never initiated. Then `completeWithdraw()` reverted ("nothing
+claimable yet") because the re-trigger at the end of the function was
+unreachable (after the revert).
 
 **Fix (M-02)**: `completeWithdraw()` now calls `_tryInitiateVeniceUnstake()`
 **before** the payout check. This ensures deferred Venice unstakes are kicked
@@ -157,9 +137,9 @@ to zero.
 
 ---
 
-### K-8: RevenueSplitter — Not Yet Externally Audited (Informational)
+### K-8: RevenueSplitter — Pending External Audit (Informational)
 
-**Description**: `RevenueSplitter.sol` was deployed in April 2026 and has **not** been covered by the Bretzel or Pashov AI external audits (which were scoped to sDIEM, csDIEM, and DIEMVault as of March 2026).
+**Description**: `RevenueSplitter.sol` was deployed in April 2026 and has not been covered by the Bretzel or Pashov AI external audits (which were scoped to sDIEM and DIEMVault as of March 2026).
 
 **Internal review only**: The contract passed an in-house adversarial pass using the Pashov AI `solidity-auditor` skill on 2026-04-14. Findings:
 
@@ -179,22 +159,6 @@ to zero.
 
 ---
 
-### K-7: csDIEM Donation Attack Surface (Informational)
-
-**Description**: Anyone can call `csDIEM.donate()` to increase share price.
-An attacker could front-run a large deposit by donating DIEM, inflating the
-share price, then the depositor gets fewer shares.
-
-**Impact**: First-depositor or donation-based share inflation attacks.
-
-**Accepted because**:
-- ERC-4626 virtual shares/assets offset of 1e6 makes this attack
-  economically infeasible (attacker must donate ~1e6 DIEM to steal 1 wei)
-- OpenZeppelin's ERC-4626 implementation includes this defense by default
-- No practical attack vector at realistic DIEM prices
-
----
-
 ## Out of Scope
 
 | Item | Reason |
@@ -202,7 +166,6 @@ share price, then the depositor gets fewer shares.
 | Frontend / UI vulnerabilities | Not part of smart contract audit |
 | Off-chain relay watcher security | Separate system, not on-chain |
 | Venice protocol internals | Third-party dependency; audited separately |
-| Aerodrome protocol internals | Third-party dependency; audited separately |
 | DIEM token contract itself | Pre-existing, not modified in this scope |
 | DIEMVault withdrawals, bridges | Not yet implemented (Phase 2) |
 | Keeper/bot infrastructure | Off-chain operational concern |
@@ -220,16 +183,6 @@ share price, then the depositor gets fewer shares.
 4. `totalPendingWithdrawals` matches sum of all pending withdrawal request amounts
 5. `diem.balanceOf(sDIEM) + venice.stakedAmount(sDIEM) + venice.pendingAmount(sDIEM) >= totalStaked + totalPendingWithdrawals`
    — DIEM conservation across Venice
-
-### csDIEM
-
-1. `totalSupply > 0 → totalAssets > 0` — no shares without backing assets
-2. Share price (`convertToAssets(1e18)`) is monotonically non-decreasing
-   (donations only increase, never decrease)
-3. `totalPendingRedemptions` matches sum of all pending redemption request amounts
-4. `diem.balanceOf(csDIEM) + venice.stakedAmount(csDIEM) + venice.pendingAmount(csDIEM) >= totalAssets + totalPendingRedemptions`
-   — DIEM conservation
-5. `convertToShares(convertToAssets(shares)) <= shares` — rounding favors vault
 
 ### DIEMVault
 
