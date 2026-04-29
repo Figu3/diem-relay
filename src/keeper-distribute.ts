@@ -85,11 +85,15 @@ const SPLITTER_ABI = [
 ] as const;
 
 const CSDIEM_ABI = [
-  { name: "harvest", type: "function", stateMutability: "nonpayable", inputs: [], outputs: [] },
+  { name: "harvest", type: "function", stateMutability: "nonpayable", inputs: [{ name: "deadline", type: "uint256" }], outputs: [] },
   { name: "pendingHarvest", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { name: "minHarvest", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "uint256" }] },
   { name: "paused", type: "function", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] },
 ] as const;
+
+// Mempool-delay protection window for harvest swap. Computed at submission
+// time (Date.now), not at execution time — that's the whole point.
+const HARVEST_DEADLINE_SECS = 300;
 
 const ERC20_ABI = [
   { name: "balanceOf", type: "function", stateMutability: "view", inputs: [{ name: "a", type: "address" }], outputs: [{ type: "uint256" }] },
@@ -180,8 +184,12 @@ async function runHarvest(): Promise<boolean> {
     return false;
   }
 
+  // Compute deadline at submission time so it provides real mempool-delay
+  // protection — passing block.timestamp+N from on-chain would be useless.
+  const deadline = BigInt(Math.floor(Date.now() / 1000) + HARVEST_DEADLINE_SECS);
+
   if (DRY_RUN) {
-    log("harvest dry-run: would call csDIEM.harvest()");
+    log(`harvest dry-run: would call csDIEM.harvest(deadline=${deadline})`);
     return true;
   }
 
@@ -191,14 +199,16 @@ async function runHarvest(): Promise<boolean> {
       address: CSDIEM_ADDRESS as Address,
       abi: CSDIEM_ABI,
       functionName: "harvest",
+      args: [deadline],
     });
 
     const hash = await wallet.writeContract({
       address: CSDIEM_ADDRESS as Address,
       abi: CSDIEM_ABI,
       functionName: "harvest",
+      args: [deadline],
     });
-    log(`harvest tx sent: ${hash}`);
+    log(`harvest tx sent: ${hash} deadline=${deadline}`);
 
     const receipt = await pub.waitForTransactionReceipt({ hash, timeout: 90_000 });
     if (receipt.status !== "success") {

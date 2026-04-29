@@ -137,7 +137,7 @@ contract csDIEMHandler is Test {
         vm.warp(block.timestamp + 24 hours);
 
         // Harvest
-        try vault.harvest() {} catch {}
+        try vault.harvest(block.timestamp + 300) {} catch {}
     }
 
     function warpTime(uint256 secs) external {
@@ -192,6 +192,11 @@ contract csDIEMInvariantTest is Test {
             1,
             1e6
         );
+
+        // Mandatory floor (Pashov #3) — set sentinel value so try/catch'd
+        // harvest in the handler doesn't always revert on "floor unset".
+        vm.prank(admin);
+        vault.setMinDiemPerUsdc(1);
 
         handler = new csDIEMHandler(vault, stakingVault, diem, usdc, operator);
 

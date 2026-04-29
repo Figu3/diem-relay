@@ -96,7 +96,10 @@ interface IcsDIEM is IERC4626 {
     // ── Harvest (permissionless) ────────────────────────────────────────────
 
     /// @notice Claim USDC from sDIEM, swap to DIEM, restake. Anyone can call.
-    function harvest() external;
+    /// @param deadline Unix timestamp by which the underlying swap must execute.
+    ///        Must be supplied by the caller (computed at submission time);
+    ///        an internally-derived deadline gives no mempool-delay protection.
+    function harvest(uint256 deadline) external;
 
     // ── Async Redemption ────────────────────────────────────────────────────
 

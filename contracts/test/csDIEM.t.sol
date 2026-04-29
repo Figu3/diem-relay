@@ -53,6 +53,12 @@ contract csDIEMTest is Test {
             1e6     // minHarvest (1 USDC)
         );
 
+        // The absolute price floor is now mandatory (Pashov #3) — set a low
+        // sentinel value here so existing harvest tests hit the relative TWAP
+        // ceiling, not this floor. Real deployments must set a meaningful value.
+        vm.prank(admin);
+        vault.setMinDiemPerUsdc(1);
+
         // Fund users
         diem.mint(alice, INITIAL_BALANCE);
         diem.mint(bob, INITIAL_BALANCE);
@@ -184,7 +190,7 @@ contract csDIEMTest is Test {
         assertGt(pending, 0);
 
         // 5. Harvest — claims USDC, swaps to DIEM, restakes
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
 
         // 6. totalAssets should have increased
         assertGt(vault.totalAssets(), totalBefore);
@@ -202,7 +208,7 @@ contract csDIEMTest is Test {
         vm.expectEmit(true, false, false, false);
         emit IcsDIEM.Harvested(address(this), 0, 0); // Don't check exact amounts
 
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
     }
 
     function test_harvest_revertsIfBelowMinimum() public {
@@ -211,7 +217,7 @@ contract csDIEMTest is Test {
 
         // No rewards seeded
         vm.expectRevert("csDIEM: below min harvest");
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
     }
 
     function test_harvest_revertsWhenPaused() public {
@@ -224,7 +230,7 @@ contract csDIEMTest is Test {
         vault.pause();
 
         vm.expectRevert("csDIEM: paused");
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
     }
 
     function test_harvest_anyoneCanCall() public {
@@ -235,7 +241,7 @@ contract csDIEMTest is Test {
 
         // Bob can harvest (permissionless)
         vm.prank(bob);
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
     }
 
     function test_harvest_increasesSharePrice() public {
@@ -246,7 +252,7 @@ contract csDIEMTest is Test {
 
         _seedRewards(REWARD_AMOUNT);
         vm.warp(block.timestamp + 24 hours);
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
 
         uint256 priceAfter = vault.convertToAssets(1e24);
         assertGt(priceAfter, priceBefore);
@@ -476,7 +482,7 @@ contract csDIEMTest is Test {
         // Harvest increases share price
         _seedRewards(REWARD_AMOUNT);
         vm.warp(block.timestamp + 24 hours);
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
 
         vm.prank(alice);
         vault.cancelRedeem();
@@ -744,7 +750,7 @@ contract csDIEMTest is Test {
         // Harvest
         _seedRewards(REWARD_AMOUNT);
         vm.warp(block.timestamp + 24 hours);
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
 
         uint256 priceAfterHarvest = vault.convertToAssets(1e24);
         assertGe(priceAfterHarvest, priceBefore);
@@ -770,7 +776,7 @@ contract csDIEMTest is Test {
         // 2. Seed and harvest (share price up)
         _seedRewards(REWARD_AMOUNT);
         vm.warp(block.timestamp + 24 hours);
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
 
         uint256 totalAfterHarvest = vault.totalAssets();
         assertGt(totalAfterHarvest, DEPOSIT_AMOUNT);
@@ -868,7 +874,7 @@ contract csDIEMTest is Test {
 
         _seedRewards(rewardAmount);
         vm.warp(block.timestamp + 24 hours);
-        vault.harvest();
+        vault.harvest(block.timestamp + 300);
 
         uint256 priceAfter = vault.convertToAssets(1e24);
         assertGe(priceAfter, priceBefore);

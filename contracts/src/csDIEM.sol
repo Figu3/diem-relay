@@ -226,15 +226,22 @@ contract csDIEM is ERC4626, IcsDIEM, ReentrancyGuard {
      * @notice Claim USDC rewards from sDIEM, swap to DIEM, restake.
      * @dev Anyone can call. TWAP oracle protects against sandwich attacks.
      *      Reverts if accrued USDC is below minHarvest threshold.
+     * @param deadline Unix timestamp by which the swap must execute. The caller
+     *      should compute this at submission time (e.g. `block.timestamp + 300`
+     *      from their local view), NOT inside the contract — an internally-set
+     *      deadline is always satisfied at execution time and provides no
+     *      mempool-delay protection. Pashov audit finding #1.
      */
-    function harvest() external override nonReentrant whenNotPaused {
+    function harvest(uint256 deadline) external override nonReentrant whenNotPaused {
+        require(deadline >= block.timestamp, "csDIEM: expired deadline");
+
         // 1. Claim accrued USDC from sDIEM
         sdiem.claimReward();
         uint256 usdcBal = usdc.balanceOf(address(this));
         require(usdcBal >= minHarvest, "csDIEM: below min harvest");
 
         // 2. Swap USDC → DIEM via Slipstream (TWAP-protected)
-        uint256 diemReceived = _swapUsdcToDiem(usdcBal);
+        uint256 diemReceived = _swapUsdcToDiem(usdcBal, deadline);
 
         // 3. Restake DIEM into sDIEM (compounding)
         sdiem.stake(diemReceived);
@@ -424,7 +431,12 @@ contract csDIEM is ERC4626, IcsDIEM, ReentrancyGuard {
      * @dev Swap USDC → DIEM via Slipstream CL with TWAP-based slippage protection.
      *      Identical to the swap logic previously in RevenueSplitter.
      */
-    function _swapUsdcToDiem(uint256 usdcAmount) internal returns (uint256) {
+    function _swapUsdcToDiem(uint256 usdcAmount, uint256 deadline) internal returns (uint256) {
+        // 0. Bound the OracleLibrary input to uint128. USDC supply makes
+        //    overflow implausible today, but an explicit guard removes the
+        //    silent-truncation footgun. Pashov audit finding #4.
+        require(usdcAmount <= type(uint128).max, "csDIEM: usdc amount > uint128");
+
         // 1. Query CL TWAP oracle for fair price
         int24 arithmeticMeanTick = OracleLibrary.consult(oraclePool, twapWindow);
         uint256 twapOut = OracleLibrary.getQuoteAtTick(
@@ -437,11 +449,11 @@ contract csDIEM is ERC4626, IcsDIEM, ReentrancyGuard {
         // 2. Apply slippage tolerance
         uint256 amountOutMin = (twapOut * (BPS_DENOMINATOR - maxSlippageBps)) / BPS_DENOMINATOR;
 
-        // 3. Circuit breaker: enforce absolute minimum DIEM-per-USDC floor
-        if (minDiemPerUsdc > 0) {
-            uint256 absoluteMin = (usdcAmount * minDiemPerUsdc) / 1e6;
-            require(amountOutMin >= absoluteMin, "csDIEM: price below floor");
-        }
+        // 3. Circuit breaker: enforce absolute minimum DIEM-per-USDC floor.
+        //    Mandatory (no zero-default escape hatch). Pashov audit finding #3.
+        require(minDiemPerUsdc > 0, "csDIEM: floor unset");
+        uint256 absoluteMin = (usdcAmount * minDiemPerUsdc) / 1e6;
+        require(amountOutMin >= absoluteMin, "csDIEM: price below floor");
 
         // 4. Approve router to spend USDC
         usdc.forceApprove(swapRouter, usdcAmount);
@@ -453,7 +465,7 @@ contract csDIEM is ERC4626, IcsDIEM, ReentrancyGuard {
                 tokenOut: asset(),
                 tickSpacing: tickSpacing,
                 recipient: address(this),
-                deadline: block.timestamp + 300,
+                deadline: deadline,
                 amountIn: usdcAmount,
                 amountOutMinimum: amountOutMin,
                 sqrtPriceLimitX96: 0
@@ -529,6 +541,7 @@ contract csDIEM is ERC4626, IcsDIEM, ReentrancyGuard {
     }
 
     function setMinDiemPerUsdc(uint256 newMin) external override onlyAdmin {
+        require(newMin > 0, "csDIEM: zero floor");
         uint256 old = minDiemPerUsdc;
         minDiemPerUsdc = newMin;
         emit MinDiemPerUsdcUpdated(old, newMin);
