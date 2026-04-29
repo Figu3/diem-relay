@@ -7,7 +7,7 @@ const dmSans = DM_Sans({ subsets: ["latin"], variable: "--font-sans" });
 const jetbrainsMono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono" });
 
 export const metadata: Metadata = {
-  title: "DIEM Staking — CheapTokens.ai",
+  title: "DIEM Staking — DIEM Relay",
   description: "Stake DIEM to earn USDC via discounted AI compute",
 };
 

@@ -10,7 +10,7 @@ export const config = createConfig({
   chains: [base],
   connectors: [
     injected(),
-    coinbaseWallet({ appName: "CheapTokens.ai" }),
+    coinbaseWallet({ appName: "DIEM Relay" }),
   ],
   transports: {
     [base.id]: http(alchemyUrl),

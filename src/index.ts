@@ -101,7 +101,7 @@ app.get("/v1/pricing", (c) => {
 // ── Buy endpoint (x402 / supplier integration) ──────────────────────────
 //
 // Phase 0: Trusted supplier model — requires admin secret.
-//   cheaptokens.ai (or any authorized frontend) collects USDC payment from user,
+//   An authorized frontend collects USDC payment from user,
 //   then calls POST /v1/buy to issue credits at the current rate.
 //
 // Phase 1: Direct on-chain verification — txHash verified against vault contract,
