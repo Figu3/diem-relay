@@ -9,7 +9,9 @@ interface Tab {
 }
 
 interface DepositWithdrawTabsProps {
-  tabs: [Tab, Tab];
+  // Originally fixed at 2 tabs (Stake/Withdraw); relaxed to N to support
+  // the optional csDIEM Wrap tab without forking the component.
+  tabs: readonly Tab[];
 }
 
 export function DepositWithdrawTabs({ tabs }: DepositWithdrawTabsProps) {

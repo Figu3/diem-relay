@@ -183,3 +183,42 @@ export const erc20Abi = [
     stateMutability: "view",
   },
 ] as const;
+
+// ── csDIEM ──────────────────────────────────────────────────────────────
+//
+// ERC-4626 auto-compounding wrapper over sDIEM. Deposits accept DIEM;
+// standard withdraw/redeem are DISABLED — exits use the async
+// requestRedeem → 24h delay → completeRedeem flow (mirrors sDIEM/Venice).
+
+export const csDiemAbi = [
+  // ── Views ─────────────────────────────────────────────────────────────
+  { type: "function", name: "totalAssets", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "totalSupply", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "balanceOf", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "convertToAssets", inputs: [{ name: "shares", type: "uint256" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "convertToShares", inputs: [{ name: "assets", type: "uint256" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "previewDeposit", inputs: [{ name: "assets", type: "uint256" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "previewRedeem", inputs: [{ name: "shares", type: "uint256" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "paused", inputs: [], outputs: [{ name: "", type: "bool" }], stateMutability: "view" },
+  { type: "function", name: "WITHDRAWAL_DELAY", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "totalPendingRedemptions", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  {
+    type: "function",
+    name: "redemptionRequests",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [
+      { name: "assets", type: "uint256" },
+      { name: "shares", type: "uint256" },
+      { name: "requestedAt", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  { type: "function", name: "canCompleteRedeem", inputs: [{ name: "account", type: "address" }], outputs: [{ name: "", type: "bool" }], stateMutability: "view" },
+  { type: "function", name: "pendingHarvest", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+
+  // ── Mutations ─────────────────────────────────────────────────────────
+  { type: "function", name: "deposit", inputs: [{ name: "assets", type: "uint256" }, { name: "receiver", type: "address" }], outputs: [{ name: "", type: "uint256" }], stateMutability: "nonpayable" },
+  { type: "function", name: "requestRedeem", inputs: [{ name: "shares", type: "uint256" }], outputs: [{ name: "assets", type: "uint256" }], stateMutability: "nonpayable" },
+  { type: "function", name: "completeRedeem", inputs: [], outputs: [], stateMutability: "nonpayable" },
+  { type: "function", name: "cancelRedeem", inputs: [], outputs: [], stateMutability: "nonpayable" },
+] as const;
