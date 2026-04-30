@@ -17,6 +17,11 @@ Staking Flow:
   User DIEM → sDIEM → Venice forward-stake (compute credits)
   Withdrawal: 24h async request → completeWithdraw (auto-claims from Venice)
 
+Compounding Flow (optional):
+  User DIEM → csDIEM → sDIEM (auto-staked)
+  harvest(deadline): sDIEM USDC reward stream → swap via Slipstream CL → restake
+  Redemption: 24h async requestRedeem → completeRedeem (mirrors sDIEM)
+
 Deposit Flow (Phase 1):
   Borrower USDC → DIEMVault → off-chain relay watcher credits relay account
 ```
@@ -28,6 +33,7 @@ Deposit Flow (Phase 1):
 | `sDIEM.sol` | ~631 | Synthetix StakingRewards fork; deposit DIEM, earn USDC |
 | `DIEMVault.sol` | ~176 | Phase 1 USDC deposit-only vault for relay |
 | `RevenueSplitter.sol` | ~161 | 20/80 USDC splitter: Safe + sDIEM (see K-8 below) |
+| `csDIEM.sol` | ~556 | ERC-4626 auto-compounding wrapper over sDIEM (see K-9 below) |
 
 ### Privileged Roles
 
@@ -36,6 +42,7 @@ Deposit Flow (Phase 1):
 | **Admin** (all contracts) | Protocol governance | Pause/unpause, set parameters, two-step transfer, token recovery |
 | **Operator** (sDIEM) | Reward seeding | `notifyRewardAmount()` only. Deployed operator is the RevenueSplitter contract (not an EOA), so rewards are auto-forwarded from customer USDC receipts. |
 | **Admin** (RevenueSplitter) | Revenue-flow governance | Same 2/2 Safe. Can rotate `platformReceiver`, adjust `minAmount`/`cooldown` (within bounds), pause, and rescue non-USDC tokens. Cannot rescue USDC and cannot change the 20/80 ratio. |
+| **Admin** (csDIEM) | Compounding-vault governance | Same 2/2 Safe. Can rotate `swapRouter`/`oraclePool`, tune slippage/TWAP/`minDiemPerUsdc`/`minHarvest`, pause deposits+harvest. Cannot rescue DIEM/USDC, cannot bypass 24h redemption delay, cannot change share-price math. |
 
 ---
 
@@ -159,6 +166,27 @@ to zero.
 
 ---
 
+### K-9: csDIEM — Internal Audit Coverage Only (Informational)
+
+**Description**: `csDIEM.sol` was deployed in April 2026. Like RevenueSplitter (K-8), it has not been covered by an external audit. It was reviewed in-house using the Pashov AI `solidity-auditor` skill on 2026-04-30.
+
+**Findings + remediations**:
+
+- **#1 [85] — Internally-derived swap deadline (REMEDIATED)**: `harvest()` previously hard-coded `deadline = block.timestamp + 300`, which is always satisfied at execution time and provides no mempool-delay protection. Fixed by changing the signature to `harvest(uint256 deadline)` — caller computes the deadline at submission time, not at execution.
+- **#3 [75] — Missing absolute output floor (REMEDIATED)**: `minDiemPerUsdc` defaulted to 0, in which case the absolute price floor was skipped entirely (only the relative TWAP-derived `amountOutMin` protected the swap). A sustained 30-min TWAP manipulation could have drained harvest USDC. Fixed by making the floor mandatory: `_swapUsdcToDiem` now `require(minDiemPerUsdc > 0)`, and the deploy script sets it before the broadcast ends.
+- **#4 [65] — Unsafe uint128 downcast (REMEDIATED)**: Belt-and-suspenders `require(usdcAmount <= type(uint128).max)` added before the OracleLibrary call. Practically unreachable given USDC supply, but eliminates a silent footgun.
+- **#2 [80] — Timer-reset grief on `syncWithdrawals` (ACCEPTED)**: After an sDIEM batch withdrawal completes (`sdiemPending == 0`), any caller can invoke `syncWithdrawals` to initiate the next batch, starting a fresh 24h sDIEM cooldown for everyone with a pending csDIEM redemption.
+
+**Why K-9 (#2) is accepted**:
+- The in-tree guard `if (sdiemPending > 0) return;` in `_tryWithdrawFromSdiem` already bounds the impact: while a batch is pending, no one can re-trigger and reset its timer.
+- After a batch completes, *some* caller has to initiate the next batch — that's the architectural design, not griefing. Whether that caller is a real redeemer or an attacker doesn't change the 24h Venice cooldown the next batch must wait through.
+- Worst-case impact is one cycle's perturbation per round (a few seconds of timing shift), not "indefinite delay."
+- A defensive `lastSdiemBatchInitiated` rate-limit could be added in a future redeploy if the operational pattern shows real grief, but it adds complexity without a concrete attack scenario.
+
+**Other accepted Trust Assumptions** (see AUDIT.md §3 for full table): csDIEM depends on Aerodrome Slipstream's `SwapRouter` and the DIEM/USDC CL pool. The deploy script asserts `oraclePool.token0/1 == {DIEM, USDC}` and `tickSpacing()` matches before broadcasting; an external review is recommended before significant TVL accumulates.
+
+---
+
 ## Out of Scope
 
 | Item | Reason |
@@ -198,3 +226,13 @@ to zero.
 3. `stakerCut >= (bal * 8000) / 10000` on every distribution — stakers never get less than 80%, rounding dust always flows to stakers
 4. `rescueToken(USDC, ...)` always reverts — USDC is permanently non-rescuable
 5. `admin` cannot change `USDC`, `sdiem`, `PLATFORM_BPS`, or `STAKER_BPS` (immutable / constant)
+
+### csDIEM
+
+1. `totalAssets() == sdiem.balanceOf(csDIEM) + sdiemPendingWithdrawal + IERC20(DIEM).balanceOf(csDIEM) - totalPendingRedemptions` — DIEM accounted for across all states
+2. Share price (`convertToAssets(1e18)`) is monotonically non-decreasing across `harvest()` calls (no slashing path)
+3. Sum of `redemptionRequests[user].assets` over all users == `totalPendingRedemptions`
+4. Standard ERC-4626 `withdraw`/`redeem` always revert — exits go through `requestRedeem`/`completeRedeem` only
+5. `harvest()` reverts when `minDiemPerUsdc == 0` (mandatory floor enforced post-Pashov #3)
+6. After successful `harvest()`, `usdc.balanceOf(csDIEM) == 0` (all claimed USDC swapped + restaked)
+7. `recoverERC20()` always reverts for `DIEM` (underlying) and `USDC` (harvest intermediate)

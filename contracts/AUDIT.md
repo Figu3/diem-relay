@@ -1,10 +1,10 @@
 # DIEM Staking Protocol — Auditor Briefing
 
-> Target: 3 Solidity 0.8.24 contracts (~968 LOC total)
+> Target: 4 Solidity 0.8.24 contracts (~1,524 LOC total) + Slipstream interfaces & libraries
 > Chain: Base
-> Dependencies: OpenZeppelin 5.x, Venice DIEM staking
+> Dependencies: OpenZeppelin 5.x, Venice DIEM staking, Aerodrome Slipstream (CL pool + SwapRouter)
 >
-> **Note on scope**: The previous Bretzel + Pashov AI audits (March 2026) covered sDIEM and DIEMVault. RevenueSplitter (April 2026) is included here for completeness; it has been reviewed internally with the same Pashov AI tooling and is pending an external pass.
+> **Note on scope**: The previous Bretzel + Pashov AI audits (March 2026) covered sDIEM and DIEMVault. RevenueSplitter (April 2026) was reviewed internally with the same Pashov AI tooling, pending an external pass. csDIEM (April 2026) was reviewed with the Pashov AI tooling — 4 findings, 3 applied; finding #2 (timer-reset grief on `syncWithdrawals`) accepted as bounded by the existing in-tree guard.
 
 ---
 
@@ -34,6 +34,19 @@
     │   (permissionless)    │  23h cooldown + minAmount floor prevent stream
     └───────────────────────┘  fragmentation. Splitter is sDIEM's Operator.
 
+                                      ┌──────────────────────────┐
+                                      │          csDIEM           │
+                                      │ ERC-4626 wrapper. Stakes  │
+                                      │ DIEM into sDIEM, harvests │
+                                      │ accrued USDC, swaps via   │
+                                      │ Aerodrome Slipstream CL,  │
+                                      │ restakes. Yield in DIEM.  │
+                                      └──┬──────────────────────┬─┘
+                                  stake/ │                      │ swap USDC→DIEM
+                                  redeem │                      │ (Slipstream
+                                         ▼                      ▼  exactInputSingle)
+                                  (sDIEM, above)        (DIEM/USDC CL pool)
+
     ┌───────────────┐
     │  DIEMVault    │  (Standalone — no interaction with staking contracts)
     │               │
@@ -49,6 +62,7 @@
 | `sDIEM.sol` | 631 | ReentrancyGuard | Synthetix StakingRewards fork, Venice forward-staking, batched async withdrawals |
 | `DIEMVault.sol` | 176 | ReentrancyGuard | Deposit-only, reserve segregation |
 | `RevenueSplitter.sol` | 161 | ReentrancyGuard | Permissionless 20/80 splitter, immutable USDC + sDIEM, non-rug USDC rescue, 2-step admin |
+| `csDIEM.sol` | 556 | OZ ERC4626 + ReentrancyGuard | Auto-compounding wrapper over sDIEM. Standard withdraw/redeem disabled (revert in `_withdraw`); exits via async `requestRedeem → 24h → completeRedeem`. Permissionless `harvest(deadline)` claims sDIEM rewards, swaps USDC→DIEM via Slipstream `exactInputSingle` with TWAP-protected slippage + mandatory absolute floor + 1e6 virtual-shares offset. |
 
 ## 3. Trust Assumptions
 
@@ -59,7 +73,9 @@
 | **Venice DIEM staking** | High | `stake()`, `initiateUnstake()`, `unstake()` behave correctly. 24h cooldown is honored. `stakedInfos()` returns accurate balances. DIEM is returned after cooldown. |
 | **DIEM token** | High | Standard ERC-20. Has built-in staking (`IDIEMStaking` interface on the same contract). `mint()` callable by Venice staking infra (not by our contracts). |
 | **USDC** | High | Standard ERC-20. 6 decimals. No fee-on-transfer. No rebasing. |
-| **OpenZeppelin 5.x** | High | SafeERC20, ReentrancyGuard are correct. |
+| **OpenZeppelin 5.x** | High | SafeERC20, ReentrancyGuard, ERC4626 (csDIEM base) are correct. |
+| **Aerodrome Slipstream `SwapRouter`** (csDIEM only) | Medium | `exactInputSingle()` honors `amountOutMinimum` + `deadline`, transfers `tokenOut` to `recipient`, never moves more `tokenIn` than `amountIn`. Verified to point at the canonical Slipstream factory before deploy. |
+| **DIEM/USDC Slipstream CL pool** (csDIEM only) | Medium | Pool tokens are exactly {DIEM, USDC} and `tickSpacing()` matches the deploy parameter (asserted at deploy). `OracleLibrary.consult()` returns a manipulation-resistant TWAP over the configured window (≥30 min minimum, 1h default). Pool may have low liquidity in early periods — partially mitigated by `minDiemPerUsdc` absolute floor and `maxSlippageBps` relative cap. |
 
 ### Admin Trust
 
@@ -103,6 +119,25 @@ The admin **cannot**:
 - Rescue USDC — blocked by `require(token != address(USDC))` in `rescueToken()`
 - Change the 20/80 split — ratios are constants (redeploy required to change)
 - Bypass `distribute()` to access customer USDC directly
+
+### csDIEM Trust
+
+The csDIEM admin (2/2 Safe — same as sDIEM and RevenueSplitter admin) can:
+- Rotate `swapRouter` (if Aerodrome Slipstream redeploys)
+- Rotate `oraclePool` (if a more liquid CL pool emerges)
+- Adjust `maxSlippageBps` (capped at 1000 = 10%), `twapWindow` (≥1800s), `tickSpacing`
+- Adjust `minDiemPerUsdc` (must be > 0; mandatory floor — prevents catastrophic mispricing)
+- Adjust `minHarvest` (gas-profitability floor, no upper bound but uneconomic if too low)
+- Pause/unpause deposits + harvest. Redemptions always allowed (paused or not).
+- Two-step admin transfer
+- Rescue non-DIEM, non-USDC tokens
+
+The admin **cannot**:
+- Access staker funds — DIEM is held in sDIEM, not csDIEM directly
+- Steal harvest output — `harvest()` always restakes back into sDIEM, no admin sink
+- Rescue DIEM (the underlying) or USDC (harvest intermediate)
+- Bypass the 24h redemption delay
+- Change the share-price exchange rate directly (it's derived from `totalAssets / totalSupply`)
 
 ## 4. Contract Interaction Flows
 
@@ -151,6 +186,35 @@ Borrower               DIEMVault            Off-chain Watcher
   │── deposit(amount) ───→│                        │
   │                       │── emit Deposited ─────→│ credits relay account
   │                       │   borrowerBalance++    │
+```
+
+### 4.4 Compounding (csDIEM)
+
+```
+User                    csDIEM                  sDIEM                    Slipstream CL
+  │                       │                       │                            │
+  │── deposit(DIEM) ─────→│                       │                            │
+  │                       │── transferFrom ───────│                            │
+  │                       │── stake(amount) ─────→│  forward to Venice         │
+  │                       │← shares minted        │                            │
+  │                       │                       │                            │
+  Anyone calls harvest(deadline):                 │                            │
+  ─────────────────────────→│── claimReward() ───→│  pulls accrued USDC        │
+  │                       │── consult TWAP ───────────────────────────────────→│  oracle
+  │                       │── exactInputSingle() ─────────────────────────────→│  swap USDC → DIEM
+  │                       │← DIEM received                                     │
+  │                       │── stake(DIEM) ───────→│  restake (compound)        │
+  │                       │                       │                            │
+  │── requestRedeem(s) ──→│                       │                            │
+  │                       │── _burn shares                                     │
+  │                       │── _tryWithdrawFromSdiem (if needed):               │
+  │                       │── requestWithdraw() ─→│  starts sDIEM 24h cooldown │
+  │                       │                       │                            │
+  │        ... 24h ...    │                       │                            │
+  │                       │                       │                            │
+  │── completeRedeem() ──→│                       │                            │
+  │                       │── completeWithdraw() ─→  partial-fill OK           │
+  │                       │── transfer(user, DIEM)│                            │
 ```
 
 ## 5. Key Security Mechanisms
@@ -209,6 +273,18 @@ When `requestWithdraw()` is called while Venice has an active cooldown, `_tryIni
 
 These are accepted operational concerns. See `KNOWN_ISSUES.md` K-8.
 
+### 6.5 csDIEM — Slipstream swap path
+
+`harvest()` swaps USDC → DIEM through an external CL pool. Risks:
+- **TWAP manipulation** during low-liquidity windows. Mitigated by 30-min minimum window (1h default), `maxSlippageBps` cap (default 0.5%), and the mandatory absolute `minDiemPerUsdc` floor (Pashov #3) — admin must set this before deploy; the swap reverts if `minDiemPerUsdc` is unset.
+- **Sandwich-style MEV via mempool delay**. Mitigated by caller-supplied `deadline` (Pashov #1) — keeper computes deadline at submission time, not at execution time.
+- **Pool liquidity drying up** would cause `harvest()` to revert until liquidity returns. No funds at risk; csDIEM holders just stop compounding until the situation resolves. Admin can rotate `oraclePool` to a new CL pool.
+- **`uint128` truncation** of the USDC amount passed to `OracleLibrary.getQuoteAtTick`. Mitigated by an explicit `require(usdcAmount <= type(uint128).max)` (Pashov #4).
+
+### 6.6 csDIEM — Async-redemption batch initiation
+
+After a sDIEM batch withdrawal completes (and `sdiemPending == 0`), the next user (or `syncWithdrawals` caller) initiates a fresh `sdiem.requestWithdraw()` for any remaining outstanding redemptions. Pashov #2 flagged this as a potential timer-reset grief. Accepted because the in-tree guard `if (sdiemPending > 0) return;` bounds the impact to one cycle's perturbation per round (cannot be re-fired while a batch is pending), and any user can themselves re-trigger via their own `requestRedeem` call.
+
 ## 7. Compiler & Toolchain
 
 | Setting | Value |
@@ -226,11 +302,19 @@ src/
 ├── sDIEM.sol              # Staking rewards (631 LOC)
 ├── DIEMVault.sol          # USDC deposit vault (176 LOC)
 ├── RevenueSplitter.sol    # 20/80 USDC splitter (161 LOC)
-└── interfaces/
-    ├── IsDIEM.sol
-    ├── IDIEMVault.sol
-    ├── IRevenueSplitter.sol
-    └── IDIEMStaking.sol       # Venice staking interface
+├── csDIEM.sol             # ERC-4626 auto-compounding wrapper (556 LOC)
+├── interfaces/
+│   ├── IsDIEM.sol
+│   ├── IDIEMVault.sol
+│   ├── IRevenueSplitter.sol
+│   ├── IcsDIEM.sol
+│   ├── IDIEMStaking.sol      # Venice staking interface
+│   ├── ICLPool.sol           # Aerodrome Slipstream CL pool (TWAP source)
+│   └── ICLSwapRouter.sol     # Aerodrome Slipstream swap router
+└── libraries/
+    ├── OracleLibrary.sol     # TWAP price queries (csDIEM)
+    ├── TickMath.sol
+    └── FullMath.sol
 ```
 
 ## 9. Related Documents
