@@ -110,7 +110,10 @@ function log(msg: string): void {
 }
 
 function logErr(msg: string): void {
-  console.error(`[${ts()}] ${msg}`);
+  // Prefix with "ERROR:" so health-check.sh's tail-grep
+  // (FATAL:|ERROR:) catches any per-step failure for both
+  // harvest and distribute, surfacing them via Telegram.
+  console.error(`[${ts()}] ERROR: ${msg}`);
 }
 
 function die(msg: string): never {
