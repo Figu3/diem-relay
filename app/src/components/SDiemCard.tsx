@@ -43,6 +43,41 @@ const CSDIEM_TOOLTIP = (
   </>
 );
 
+// Surfaces the on-chain allowance so users understand re-approval prompts.
+// Some wallets (Rabby, MetaMask, Coinbase) cap the dApp's max-uint256 request
+// to the exact deposit amount, which gets consumed on transferFrom — hence
+// "approve every time" symptoms despite the dApp requesting unlimited.
+function AllowanceHint({
+  allowance,
+  needsApproval,
+  unlimitedThreshold,
+}: {
+  allowance: bigint;
+  needsApproval: boolean;
+  unlimitedThreshold: bigint;
+}) {
+  if (allowance >= unlimitedThreshold) return null;
+  if (allowance === 0n && !needsApproval) return null;
+
+  return (
+    <div className="space-y-1 text-[10px] leading-relaxed text-gray-500">
+      <p>
+        Current DIEM allowance:{" "}
+        <span className="font-mono text-gray-400">
+          {formatDiem(allowance)} DIEM
+        </span>
+      </p>
+      {needsApproval && (
+        <p>
+          Tip: some wallets cap approvals to the exact deposit amount. Set the
+          spending cap to <span className="text-gray-300">unlimited</span> in
+          your wallet to skip re-approving on every deposit.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function SDiemCard() {
   const { isConnected } = useAccount();
   const sdiem = useSDiem();
@@ -87,6 +122,11 @@ export function SDiemCard() {
   const needsApproval =
     stakeAmt !== "" &&
     allowanceForStake < parseUnits(stakeAmt || "0", DIEM_DECIMALS);
+
+  // Above 1T DIEM we treat allowance as effectively unlimited and skip the
+  // wallet-cap hint. Wallets rendering max-uint256 as a literal number land
+  // far above this; user-edited caps land well below.
+  const UNLIMITED_THRESHOLD = parseUnits("1000000000000", DIEM_DECIMALS);
 
   const handleStake = () => {
     if (!stakeAmt) return;
@@ -174,6 +214,11 @@ export function SDiemCard() {
             </Tooltip>
           </label>
         )}
+        <AllowanceHint
+          allowance={allowanceForStake}
+          needsApproval={needsApproval}
+          unlimitedThreshold={UNLIMITED_THRESHOLD}
+        />
         <ActionButton
           needsApproval={needsApproval}
           onApprove={() => activeApproval.approve()}
@@ -366,6 +411,11 @@ export function SDiemCard() {
             onChange={setWrapAmt}
             max={diem.balance}
             disabled={csdiem.paused}
+          />
+          <AllowanceHint
+            allowance={diemForCs.allowance}
+            needsApproval={wrapNeedsApproval}
+            unlimitedThreshold={UNLIMITED_THRESHOLD}
           />
           <ActionButton
             needsApproval={wrapNeedsApproval}
