@@ -25,7 +25,7 @@
  * Env:
  *   RPC_URL          - Base JSON-RPC URL (required)
  *   KEEPER_KEY       - Hot-wallet private key, gas-only (required)
- *   SPLITTER_ADDRESS - RevenueSplitter (default: 0xd185138CEA135E60CA6E567BE53DEC81D89Ce7D6)
+ *   SPLITTER_ADDRESS - RevenueSplitter v2 (default: 0x96DAE834f7276D50a09149D938e998b1766AFCDa)
  *   CSDIEM_ADDRESS    - csDIEM v1 vault. If unset, v1 harvest is skipped.
  *   CSDIEM_V2_ADDRESS - csDIEM v2 vault. If unset, v2 harvest is skipped.
  *   USDC_ADDRESS     - USDC token (default: Base USDC)
@@ -58,7 +58,7 @@ import { privateKeyToAccount } from "viem/accounts";
 const RPC_URL = process.env.RPC_URL ?? "";
 const KEEPER_KEY = process.env.KEEPER_KEY ?? "";
 const SPLITTER_ADDRESS = (process.env.SPLITTER_ADDRESS ??
-  "0xd185138CEA135E60CA6E567BE53DEC81D89Ce7D6") as Address;
+  "0x96DAE834f7276D50a09149D938e998b1766AFCDa") as Address;
 const CSDIEM_ADDRESS = (process.env.CSDIEM_ADDRESS ?? "") as Address | "";
 const CSDIEM_V2_ADDRESS = (process.env.CSDIEM_V2_ADDRESS ?? "") as Address | "";
 const USDC_ADDRESS = (process.env.USDC_ADDRESS ??
@@ -355,9 +355,8 @@ async function main(): Promise<void> {
   const harvestV1Ok = await runHarvest(CSDIEM_ADDRESS, "v1");
   const harvestV2Ok = await runHarvest(CSDIEM_V2_ADDRESS, "v2");
 
-  // Step 2: distribute — push the next 24h batch into sDIEM v1 (operator).
-  // RevenueSplitter still points at sDIEM v1 during the migration window;
-  // sDIEM v2 is seeded manually by the Safe until cutover.
+  // Step 2: distribute — push the next 24h batch into sDIEM v2 (operator).
+  // RevenueSplitter v2 receives current CheapTokens revenue and notifies sDIEM v2.
   const distributeOk = await runDistribute();
 
   const anyOk = harvestV1Ok || harvestV2Ok || distributeOk;

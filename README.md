@@ -168,7 +168,7 @@ All contracts are deployed on **Base** (chain ID 8453).
 |---|---|
 | **DIEMVault** | `0xdc9625b026f6Dd17F9d96e608592A9C592e27eEF` |
 | **sDIEM** | `0xdbF05AF4fdAA518AC9c4dc5aA49399b8dd0B4be2` |
-| **RevenueSplitter** | `0xd185138CEA135E60CA6E567BE53DEC81D89Ce7D6` |
+| **RevenueSplitter v2** | `0x96DAE834f7276D50a09149D938e998b1766AFCDa` |
 | **csDIEM** | `0x4899f5fBA1bf43C8Bea483bE6342e55Bc16e045a` |
 | sDIEM (superseded) | `0x59650b79eF4c2eC193B49DbFc23d50d48EBf9f34` |
 | sDIEM (superseded) | `0x9566a919c7A4a7b22243736f39781A2787ddC11e` |
@@ -207,7 +207,7 @@ After RevenueSplitter deployment, the sDIEM admin must call `sDIEM.setOperator(s
 A daily cron on the project's NUC runs `src/keeper-distribute.ts` at 00:05 UTC, which:
 
 1. **`csDIEM.harvest(deadline)`** — claim previous 24h's USDC stream from sDIEM, swap via Slipstream CL, restake. Skipped silently if `pendingHarvest < minHarvest`.
-2. **`RevenueSplitter.distribute()`** — split next 24h batch 20/80 into platform Safe + sDIEM rewards. Skipped silently if balance below `minAmount` or cooldown not elapsed.
+2. **`RevenueSplitter.distribute()`** — split the next 24h batch from RevenueSplitter v2 20/80 into platform Safe + sDIEM v2 rewards. Skipped silently if balance below `minAmount` or cooldown not elapsed.
 
 Each step has independent skip conditions and try/catch isolation — a swap-side failure on harvest does NOT block the platform-fee distribute. A second cron at 06:00 UTC runs `scripts/health-check.sh`, which alerts via Telegram on missed runs (>36h log staleness), errored runs (any `ERROR:`/`FATAL:` in the latest run), or mid-run kills (latest run never reached `done:`).
 

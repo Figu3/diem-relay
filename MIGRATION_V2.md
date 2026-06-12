@@ -88,7 +88,7 @@ export PRIVATE_KEY=0x...        # deployer
 export BASE_RPC_URL=https://...  # use a dedicated endpoint, not mainnet.base.org
 export BASESCAN_API_KEY=...
 export ADMIN=0x01Ea790410D9863A57771D992D2A72ea326DD7C9  # the 2/2 Safe
-export OPERATOR=0xd185138CEA135E60CA6E567BE53DEC81D89Ce7D6  # RevenueSplitter v1 (reused)
+export OPERATOR=0x96DAE834f7276D50a09149D938e998b1766AFCDa  # RevenueSplitter v2
 ```
 
 `ADMIN` must be the literal Safe address or the string `DEPLOYER` (sentinel
@@ -107,7 +107,7 @@ Verify the broadcast log shows the expected immutables:
 - `diem == 0xF4d97F2da56e8c3098f3a8D538DB630A2606a024`
 - `usdc == 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
 - `admin == <Safe>`
-- `operator == <RevenueSplitter v1>`
+- `operator == <RevenueSplitter v2>`
 
 Save the deployed address. We'll call it `SDIEM_V2` below.
 
@@ -167,26 +167,18 @@ forge verify-contract $CSDIEM_V2 csDIEMv2 --chain base --watch \
 csDIEM v1 was unverified for months — don't repeat that. Verification
 makes the contract integratable.
 
-### 5. Operator setup (if reusing RevenueSplitter v1)
+### 5. Operator setup
 
-If you're keeping RevenueSplitter v1 as the operator for both sDIEM v1 and
-sDIEM v2 (recommended — the splitter is generic and doesn't know about v1
-vs v2), then no action is needed on the splitter side. But sDIEM v2's
-`operator` immutable is set at construction; if you want the splitter to
-notify v2 rewards, the splitter must point at sDIEM v2.
+RevenueSplitter v2 is the live operator for sDIEM v2 rewards and is the
+address that receives current CheapTokens USDC revenue. sDIEM v2's `operator`
+is immutable at construction, so the splitter used by the keeper must be the
+same RevenueSplitter v2 address configured as the sDIEM v2 operator.
 
-Two options:
+Current cutover state:
 
-- **Run both in parallel** during the migration window: keep RevenueSplitter
-  v1 pointed at sDIEM v1 (rewards keep flowing to v1 stakers), and have a
-  separate operator (the deployer EOA or the Safe) notify sDIEM v2 manually
-  with seed rewards until LP migration is complete.
-- **Switch over fully at a chosen cutover block**: redeploy RevenueSplitter
-  to point at sDIEM v2, have the Safe call `sDIEM.setOperator(new splitter)`
-  on v1 (or pause v1 entirely), and let v2 take over.
-
-The first option is friendlier to LPs mid-migration. The second is
-operationally simpler.
+- RevenueSplitter v2 receives new CheapTokens revenue and notifies sDIEM v2.
+- RevenueSplitter v1 remains historical for the v1 migration window.
+- The keeper should distribute through RevenueSplitter v2 by default.
 
 ## Post-deploy checklist
 
@@ -261,8 +253,8 @@ The keeper currently calls `csDIEM.harvest(deadline)` and
   both v1 and v2 until v1 is deprecated. Both calls have independent
   try/catch and skip-conditions — a failure on v2 shouldn't block v1's
   distribute.
-- **No changes needed to the distribute step** as long as the splitter
-  isn't migrated yet. If the splitter is rotated, update the address.
+- **Distribute through RevenueSplitter v2.** The keeper default should match
+  the live RevenueSplitter v2 address that receives CheapTokens revenue.
 
 Sketch of the keeper diff:
 

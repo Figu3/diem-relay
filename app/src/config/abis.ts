@@ -308,4 +308,5 @@ export const csDiemV2Abi = [
 
 export const revenueSplitterAbi = [
   { type: "function", name: "totalStakerPaid", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
+  { type: "function", name: "minAmount", inputs: [], outputs: [{ name: "", type: "uint256" }], stateMutability: "view" },
 ] as const;
