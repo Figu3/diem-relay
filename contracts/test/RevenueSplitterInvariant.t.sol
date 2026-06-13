@@ -12,8 +12,8 @@ import {MockSDiem} from "./mocks/MockSDiem.sol";
  *
  * Properties:
  *   I1: After distribute(), USDC balance drops by exactly platformCut + stakerCut.
- *   I2: totalPlatformPaid / (totalPlatformPaid + totalStakerPaid) <= 2000/10000 at all times.
- *   I3: stakerCut per distribution >= (balanceAtCall * 8000) / 10000 (stakers never get less).
+ *   I2: totalPlatformPaid / (totalPlatformPaid + totalStakerPaid) <= 1000/10000 at all times.
+ *   I3: stakerCut per distribution >= (balanceAtCall * 9000) / 10000 (stakers never get less).
  *   I4: rescueToken can never remove USDC from the contract.
  */
 contract RevenueSplitterInvariantTest is Test {
@@ -40,15 +40,15 @@ contract RevenueSplitterInvariantTest is Test {
         targetContract(address(splitter));
     }
 
-    // Invariant I2: platform share never exceeds 20%
+    // Invariant I2: platform share never exceeds 10%
     function invariant_platformShareCap() public view {
         uint256 total = splitter.totalPlatformPaid() + splitter.totalStakerPaid();
         if (total == 0) return;
-        // platformPaid * 10000 <= total * 2000 (i.e. share <= 20%)
+        // platformPaid * 10000 <= total * 1000 (i.e. share <= 10%)
         assertLe(
             splitter.totalPlatformPaid() * 10_000,
-            total * 2_000,
-            "I2: platform share > 20%"
+            total * 1_000,
+            "I2: platform share > 10%"
         );
     }
 

@@ -9,15 +9,16 @@ import {IsDIEM} from "../src/interfaces/IsDIEM.sol";
 /**
  * Fork integration test.
  *
- * Runs against Base mainnet using a recent block. Verifies the full flow:
- *   - Deploy splitter with real USDC and real sDIEM.
- *   - Admin Safe switches sDIEM operator to splitter.
+ * Runs against Base mainnet using a recent block. Verifies the full v3 flow:
+ *   - Deploy splitter with real USDC and real sDIEM v2.
+ *   - Admin Safe switches sDIEM v2 operator to the new splitter.
  *   - USDC transferred to splitter.
- *   - distribute() sends 20% to Safe, 80% to sDIEM (rewardRate increases).
+ *   - distribute() sends 10% to Safe, 90% to sDIEM v2 (rewardRate increases).
  */
 contract RevenueSplitterForkTest is Test {
     address constant USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
-    address constant SDIEM = 0xdbF05AF4fdAA518AC9c4dc5aA49399b8dd0B4be2;
+    // sDIEM v2 — the live staking contract the v3 splitter feeds.
+    address constant SDIEM = 0x8065228a8156590A8BFca30678394e9db91f80Ee;
     address constant SAFE = 0x01Ea790410D9863A57771D992D2A72ea326DD7C9;
 
     RevenueSplitter internal splitter;
@@ -56,20 +57,32 @@ contract RevenueSplitterForkTest is Test {
 
         assertEq(
             IERC20(USDC).balanceOf(SAFE) - safeBalBefore,
-            200e6,
-            "Safe got 20%"
+            100e6,
+            "Safe got 10%"
         );
 
         // Real sDIEM refunds rounding dust to the operator (splitter). The
         // delta on sDIEM is stakerCut minus that dust. Assert the invariant
-        // that matters: sDIEM balance grew by approximately 80% and nothing
+        // that matters: sDIEM balance grew by approximately 90% and nothing
         // was lost (dust, if any, remains on the splitter for the next round).
         uint256 sdiemDelta = IERC20(USDC).balanceOf(SDIEM) - sdiemBalBefore;
         uint256 safeDelta = IERC20(USDC).balanceOf(SAFE) - safeBalBefore;
         uint256 splitterResidual = IERC20(USDC).balanceOf(address(splitter));
 
         assertEq(sdiemDelta + safeDelta + splitterResidual, revenue, "conservation");
-        assertApproxEqAbs(sdiemDelta, 800e6, 1e6, "sDIEM got ~80%");
+        assertApproxEqAbs(sdiemDelta, 900e6, 1e6, "sDIEM got ~90%");
+        assertGt(IsDIEM(SDIEM).rewardRate(), 0, "rewardRate set");
+    }
+
+    function test_fork_distributeAtFloor() public {
+        // The 0.1 USDC default floor must clear on real sDIEM v2.
+        uint256 revenue = 100_000; // 0.1 USDC
+        deal(USDC, address(splitter), revenue);
+
+        uint256 safeBalBefore = IERC20(USDC).balanceOf(SAFE);
+        splitter.distribute();
+
+        assertEq(IERC20(USDC).balanceOf(SAFE) - safeBalBefore, 10_000, "Safe got 10% of floor");
         assertGt(IsDIEM(SDIEM).rewardRate(), 0, "rewardRate set");
     }
 }

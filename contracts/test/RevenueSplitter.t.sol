@@ -27,18 +27,18 @@ contract RevenueSplitterTest is Test {
         sdiem.setOperator(address(splitter));
     }
 
-    function test_distribute_splits20_80() public {
+    function test_distribute_splits10_90() public {
         usdc.mint(address(splitter), 1_000e6);
 
         vm.prank(anyone);
         splitter.distribute();
 
-        assertEq(usdc.balanceOf(receiver), 200e6, "platform cut");
-        assertEq(sdiem.totalNotified(), 800e6, "staker cut");
+        assertEq(usdc.balanceOf(receiver), 100e6, "platform cut");
+        assertEq(sdiem.totalNotified(), 900e6, "staker cut");
         assertEq(usdc.balanceOf(address(splitter)), 0, "no dust");
         assertEq(splitter.lastDistribution(), block.timestamp, "timestamp");
-        assertEq(splitter.totalPlatformPaid(), 200e6);
-        assertEq(splitter.totalStakerPaid(), 800e6);
+        assertEq(splitter.totalPlatformPaid(), 100e6);
+        assertEq(splitter.totalStakerPaid(), 900e6);
     }
 
     function test_distribute_revertsDuringCooldown() public {
@@ -53,7 +53,7 @@ contract RevenueSplitterTest is Test {
         // Warp past cooldown → succeeds
         vm.warp(block.timestamp + 23 hours);
         splitter.distribute();
-        assertEq(splitter.totalPlatformPaid(), 400e6);
+        assertEq(splitter.totalPlatformPaid(), 200e6); // 2 × 1000 USDC × 10%
     }
 
     function test_distribute_firstCallHasNoCooldown() public {
@@ -64,9 +64,16 @@ contract RevenueSplitterTest is Test {
     }
 
     function test_distribute_revertsBelowMinAmount() public {
-        usdc.mint(address(splitter), 50e6); // default min is 100 USDC
+        usdc.mint(address(splitter), 50_000); // 0.05 USDC, default min is 0.1 USDC
         vm.expectRevert(bytes("RS: below min"));
         splitter.distribute();
+    }
+
+    function test_distribute_atFloorSucceeds() public {
+        usdc.mint(address(splitter), 100_000); // exactly 0.1 USDC floor
+        splitter.distribute();
+        assertEq(usdc.balanceOf(receiver), 10_000, "platform 10% of 0.1 USDC");
+        assertEq(sdiem.totalNotified(), 90_000, "staker 90% of 0.1 USDC");
     }
 
     function test_distribute_roundingDustGoesToStakers() public {
@@ -75,10 +82,10 @@ contract RevenueSplitterTest is Test {
         usdc.mint(address(splitter), 1_000_000_001);
         splitter.distribute();
 
-        // platformCut = (1_000_000_001 * 2000) / 10000 = 200_000_000 (truncated)
-        // stakerCut  = 1_000_000_001 - 200_000_000 = 800_000_001 (gets the dust)
-        assertEq(usdc.balanceOf(receiver), 200_000_000, "platform truncated");
-        assertEq(sdiem.totalNotified(), 800_000_001, "staker gets dust");
+        // platformCut = (1_000_000_001 * 1000) / 10000 = 100_000_000 (truncated)
+        // stakerCut  = 1_000_000_001 - 100_000_000 = 900_000_001 (gets the dust)
+        assertEq(usdc.balanceOf(receiver), 100_000_000, "platform truncated");
+        assertEq(sdiem.totalNotified(), 900_000_001, "staker gets dust");
     }
 
     function test_pause_blocksDistribute() public {
@@ -98,7 +105,7 @@ contract RevenueSplitterTest is Test {
         vm.stopPrank();
 
         splitter.distribute();
-        assertEq(usdc.balanceOf(receiver), 200e6);
+        assertEq(usdc.balanceOf(receiver), 100e6);
     }
 
     function test_pause_revertsForNonAdmin() public {

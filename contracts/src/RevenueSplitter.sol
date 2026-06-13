@@ -9,7 +9,7 @@ import {IsDIEM} from "./interfaces/IsDIEM.sol";
 
 /**
  * @title RevenueSplitter
- * @notice 20/80 USDC revenue splitter for DIEM ecosystem.
+ * @notice 10/90 USDC revenue splitter for DIEM ecosystem.
  *         Platform fees to 2/2 Safe, staker rewards to sDIEM.notifyRewardAmount.
  *         Permissionless distribute() with 23h cooldown + min amount floor.
  *
@@ -26,11 +26,11 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
 
     // Constants
     uint256 public constant BPS_DENOMINATOR = 10_000;
-    uint256 public constant PLATFORM_BPS = 2_000;         // 20%
-    uint256 public constant STAKER_BPS = 8_000;           // 80%
+    uint256 public constant PLATFORM_BPS = 1_000;         // 10%
+    uint256 public constant STAKER_BPS = 9_000;           // 90%
     uint256 public constant MIN_AMOUNT_CAP = 10_000e6;    // 10,000 USDC (6 decimals)
     uint256 public constant MAX_COOLDOWN = 7 days;
-    uint256 public constant DEFAULT_MIN_AMOUNT = 100e6;   // 100 USDC
+    uint256 public constant DEFAULT_MIN_AMOUNT = 100_000; // 0.1 USDC (6 decimals)
     uint256 public constant DEFAULT_COOLDOWN = 23 hours;
 
     // Immutables

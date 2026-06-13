@@ -17,19 +17,20 @@ import {IsDIEM} from "../src/interfaces/IsDIEM.sol";
  *
  * Env (all default to Base mainnet values):
  *   USDC            - defaults to 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913
- *   SDIEM           - defaults to 0xdbF05AF4fdAA518AC9c4dc5aA49399b8dd0B4be2
+ *   SDIEM           - defaults to sDIEM v2 0x8065228a8156590A8BFca30678394e9db91f80Ee
  *   ADMIN           - defaults to 2/2 Safe 0x01Ea...D7C9
  *   PLATFORM_RECV   - defaults to 2/2 Safe 0x01Ea...D7C9
  *   PRIVATE_KEY     - deployer key (required)
  *
  * Post-deploy:
- *   1. Safe signs: sDIEM.setOperator(splitter)
+ *   1. Safe signs: sDIEM.setOperator(splitter)   // moves operator off the old splitter
  *   2. atd updates cheaptokens.ai checkout to pay splitter address
- *   3. Once balance >= 100 USDC, anyone can call distribute()
+ *   3. Once balance >= 0.1 USDC, anyone can call distribute()
  */
 contract DeployRevenueSplitter is Script {
     address constant DEFAULT_USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
-    address constant DEFAULT_SDIEM = 0xdbF05AF4fdAA518AC9c4dc5aA49399b8dd0B4be2;
+    // sDIEM v2 — v3 splitter feeds the v2 staking contract, NOT v1 (0xdbF0...4be2)
+    address constant DEFAULT_SDIEM = 0x8065228a8156590A8BFca30678394e9db91f80Ee;
     address constant DEFAULT_SAFE = 0x01Ea790410D9863A57771D992D2A72ea326DD7C9;
 
     function run() external {
@@ -63,6 +64,6 @@ contract DeployRevenueSplitter is Script {
         console.log("  Next steps:");
         console.log("   1. Safe: call sDIEM.setOperator(splitter)");
         console.log("   2. atd: route cheaptokens.ai payments here");
-        console.log("   3. Anyone: call distribute() once bal >= 100 USDC");
+        console.log("   3. Anyone: call distribute() once bal >= 0.1 USDC");
     }
 }
