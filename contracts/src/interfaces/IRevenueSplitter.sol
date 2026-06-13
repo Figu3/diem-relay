@@ -7,8 +7,10 @@ import {IsDIEM} from "./IsDIEM.sol";
 /**
  * @title IRevenueSplitter
  * @notice Receives USDC revenue from cheaptokens.ai customers and distributes
- *         it 20% to a platform Safe and 80% to sDIEM stakers via
- *         notifyRewardAmount. Permissionless trigger with cooldown.
+ *         a configurable platform cut to a platform Safe and the remainder to
+ *         sDIEM stakers via notifyRewardAmount. Permissionless trigger with
+ *         cooldown. The platform cut is admin-settable but hard-capped at 20%
+ *         (MAX_PLATFORM_BPS) so the platform can never exceed that share.
  */
 interface IRevenueSplitter {
     // Events
@@ -18,6 +20,7 @@ interface IRevenueSplitter {
         uint256 stakerCut,
         uint256 timestamp
     );
+    event PlatformBpsSet(uint256 newPlatformBps);
     event PlatformReceiverSet(address indexed newReceiver);
     event MinAmountSet(uint256 newMinAmount);
     event CooldownSet(uint256 newCooldown);
@@ -33,6 +36,7 @@ interface IRevenueSplitter {
     function admin() external view returns (address);
     function pendingAdmin() external view returns (address);
     function platformReceiver() external view returns (address);
+    function platformBps() external view returns (uint256);
     function minAmount() external view returns (uint256);
     function cooldown() external view returns (uint256);
     function lastDistribution() external view returns (uint256);
@@ -44,6 +48,7 @@ interface IRevenueSplitter {
     function distribute() external;
 
     // Admin
+    function setPlatformBps(uint256 newPlatformBps) external;
     function setPlatformReceiver(address newReceiver) external;
     function setMinAmount(uint256 newMinAmount) external;
     function setCooldown(uint256 newCooldown) external;

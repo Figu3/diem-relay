@@ -157,6 +157,44 @@ contract RevenueSplitterTest is Test {
         splitter.setCooldown(30 days);
     }
 
+    function test_defaultPlatformBps_is10pct() public view {
+        assertEq(splitter.platformBps(), 1_000);
+    }
+
+    function test_setPlatformBps_changesSplit() public {
+        vm.prank(admin);
+        splitter.setPlatformBps(2_000); // raise to 20% (at cap)
+        assertEq(splitter.platformBps(), 2_000);
+
+        usdc.mint(address(splitter), 1_000e6);
+        splitter.distribute();
+        assertEq(usdc.balanceOf(receiver), 200e6, "20% after raise");
+        assertEq(sdiem.totalNotified(), 800e6, "80% to stakers");
+    }
+
+    function test_setPlatformBps_revertsAboveCap() public {
+        vm.prank(admin);
+        vm.expectRevert(bytes("RS: bps too high"));
+        splitter.setPlatformBps(2_001); // one bp over the 20% cap
+    }
+
+    function test_setPlatformBps_revertsForNonAdmin() public {
+        vm.prank(anyone);
+        vm.expectRevert(bytes("RS: not admin"));
+        splitter.setPlatformBps(1_500);
+    }
+
+    function test_setPlatformBps_allowsZero() public {
+        vm.prank(admin);
+        splitter.setPlatformBps(0); // 100% to stakers is allowed
+        assertEq(splitter.platformBps(), 0);
+
+        usdc.mint(address(splitter), 1_000e6);
+        splitter.distribute();
+        assertEq(usdc.balanceOf(receiver), 0, "no platform cut");
+        assertEq(sdiem.totalNotified(), 1_000e6, "all to stakers");
+    }
+
     function test_rescueToken_rescuesRandomToken() public {
         MockERC20 rando = new MockERC20("RND", "RND", 18);
         rando.mint(address(splitter), 1 ether);

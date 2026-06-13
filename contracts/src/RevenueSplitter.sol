@@ -9,13 +9,15 @@ import {IsDIEM} from "./interfaces/IsDIEM.sol";
 
 /**
  * @title RevenueSplitter
- * @notice 10/90 USDC revenue splitter for DIEM ecosystem.
+ * @notice Configurable USDC revenue splitter for DIEM ecosystem (default 10/90).
  *         Platform fees to 2/2 Safe, staker rewards to sDIEM.notifyRewardAmount.
  *         Permissionless distribute() with 23h cooldown + min amount floor.
  *
  * Security:
  *   - Immutable USDC and sDIEM addresses.
  *   - Admin cannot rescue USDC (non-rug by design).
+ *   - Platform cut is admin-settable but HARD-CAPPED at 20% (MAX_PLATFORM_BPS):
+ *     the platform can never take more than 20%, stakers always get >= 80%.
  *   - Admin config bounds (cooldown <= 7 days, minAmount <= 10,000 USDC).
  *   - CEI pattern on distribute().
  *   - ReentrancyGuard on distribute().
@@ -26,8 +28,8 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
 
     // Constants
     uint256 public constant BPS_DENOMINATOR = 10_000;
-    uint256 public constant PLATFORM_BPS = 1_000;         // 10%
-    uint256 public constant STAKER_BPS = 9_000;           // 90%
+    uint256 public constant MAX_PLATFORM_BPS = 2_000;     // 20% hard cap (non-rug bound)
+    uint256 public constant DEFAULT_PLATFORM_BPS = 1_000; // 10%
     uint256 public constant MIN_AMOUNT_CAP = 10_000e6;    // 10,000 USDC (6 decimals)
     uint256 public constant MAX_COOLDOWN = 7 days;
     uint256 public constant DEFAULT_MIN_AMOUNT = 100_000; // 0.1 USDC (6 decimals)
@@ -41,6 +43,7 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     address public override admin;
     address public override pendingAdmin;
     address public override platformReceiver;
+    uint256 public override platformBps;  // platform cut in bps; always <= MAX_PLATFORM_BPS
     uint256 public override minAmount;
     uint256 public override cooldown;
     uint256 public override lastDistribution;
@@ -76,6 +79,7 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         sdiem = _sdiem;
         admin = _admin;
         platformReceiver = _platformReceiver;
+        platformBps = DEFAULT_PLATFORM_BPS;
         minAmount = DEFAULT_MIN_AMOUNT;
         cooldown = DEFAULT_COOLDOWN;
     }
@@ -87,7 +91,7 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
         uint256 bal = USDC.balanceOf(address(this));
         require(bal >= minAmount, "RS: below min");
 
-        uint256 platformCut = (bal * PLATFORM_BPS) / BPS_DENOMINATOR;
+        uint256 platformCut = (bal * platformBps) / BPS_DENOMINATOR;
         uint256 stakerCut = bal - platformCut;
 
         // Effects
@@ -104,6 +108,12 @@ contract RevenueSplitter is IRevenueSplitter, ReentrancyGuard {
     }
 
     // Admin — config setters
+    function setPlatformBps(uint256 newPlatformBps) external override onlyAdmin {
+        require(newPlatformBps <= MAX_PLATFORM_BPS, "RS: bps too high");
+        platformBps = newPlatformBps;
+        emit PlatformBpsSet(newPlatformBps);
+    }
+
     function setPlatformReceiver(address newReceiver) external override onlyAdmin {
         require(newReceiver != address(0), "RS: zero receiver");
         platformReceiver = newReceiver;

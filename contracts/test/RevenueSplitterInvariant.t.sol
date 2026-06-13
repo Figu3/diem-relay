@@ -12,8 +12,10 @@ import {MockSDiem} from "./mocks/MockSDiem.sol";
  *
  * Properties:
  *   I1: After distribute(), USDC balance drops by exactly platformCut + stakerCut.
- *   I2: totalPlatformPaid / (totalPlatformPaid + totalStakerPaid) <= 1000/10000 at all times.
- *   I3: stakerCut per distribution >= (balanceAtCall * 9000) / 10000 (stakers never get less).
+ *   I2: totalPlatformPaid / (totalPlatformPaid + totalStakerPaid) <= MAX_PLATFORM_BPS/10000
+ *       (20%) at all times — holds even if the admin retunes the split, because the
+ *       setter is hard-capped. Stakers always keep >= 80%.
+ *   I3: stakerCut per distribution >= (balanceAtCall * (10000 - platformBps)) / 10000.
  *   I4: rescueToken can never remove USDC from the contract.
  */
 contract RevenueSplitterInvariantTest is Test {
@@ -38,17 +40,21 @@ contract RevenueSplitterInvariantTest is Test {
         usdc.mint(address(splitter), 10_000e6);
 
         targetContract(address(splitter));
+        // Let the fuzzer act as admin so it can retune the split via
+        // setPlatformBps — proves I2 (20% cap) holds even when the split moves.
+        targetSender(admin);
     }
 
-    // Invariant I2: platform share never exceeds 10%
+    // Invariant I2: platform share never exceeds the 20% hard cap, even if the
+    // split is retuned mid-run (setter is bounded by MAX_PLATFORM_BPS).
     function invariant_platformShareCap() public view {
         uint256 total = splitter.totalPlatformPaid() + splitter.totalStakerPaid();
         if (total == 0) return;
-        // platformPaid * 10000 <= total * 1000 (i.e. share <= 10%)
+        // platformPaid * 10000 <= total * MAX_PLATFORM_BPS (i.e. share <= 20%)
         assertLe(
             splitter.totalPlatformPaid() * 10_000,
-            total * 1_000,
-            "I2: platform share > 10%"
+            total * splitter.MAX_PLATFORM_BPS(),
+            "I2: platform share > 20% cap"
         );
     }
 
