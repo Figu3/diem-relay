@@ -134,7 +134,16 @@ export function SDiemCard() {
   const [redeemAmt, setRedeemAmt] = useState("");
   const [autoCompound, setAutoCompound] = useState(false);
 
-  const apr = calcSDiemApr(sdiem.rewardRate, sdiem.totalStaked, diemPriceUsd);
+  // Gate APR on an active reward period: rewardRate persists after
+  // periodFinish in the Synthetix model, so without this the badge would show
+  // a phantom APR for a vault that has stopped paying.
+  const apr = calcSDiemApr(
+    sdiem.rewardRate,
+    sdiem.totalStaked,
+    diemPriceUsd,
+    sdiem.periodFinish,
+    BigInt(Math.floor(Date.now() / 1000))
+  );
 
   const csdiemAvailable = isV2 || isCSDiemDeployed;
 
