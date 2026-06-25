@@ -11,7 +11,7 @@ export const BASESCAN_ADDRESSES = {
   diemVault: "https://basescan.org/address/0xdc9625b026f6Dd17F9d96e608592A9C592e27eEF",
   sdiemV2: "https://basescan.org/address/0x8065228a8156590A8BFca30678394e9db91f80Ee",
   csdiemV2: "https://basescan.org/address/0x78B8726929911044748374178CB2D417A54319e5",
-  revenueSplitter: "https://basescan.org/address/0x96DAE834f7276D50a09149D938e998b1766AFCDa",
+  revenueSplitter: "https://basescan.org/address/0x213c8d7434E2ae7AA1C392767c5120778D413215",
   adminSafe: "https://basescan.org/address/0x01Ea790410D9863A57771D992D2A72ea326DD7C9",
 };
 

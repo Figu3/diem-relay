@@ -88,7 +88,7 @@ export PRIVATE_KEY=0x...        # deployer
 export BASE_RPC_URL=https://...  # use a dedicated endpoint, not mainnet.base.org
 export BASESCAN_API_KEY=...
 export ADMIN=0x01Ea790410D9863A57771D992D2A72ea326DD7C9  # the 2/2 Safe
-export OPERATOR=0x96DAE834f7276D50a09149D938e998b1766AFCDa  # RevenueSplitter v2
+export OPERATOR=0x213c8d7434E2ae7AA1C392767c5120778D413215  # RevenueSplitter v3
 ```
 
 `ADMIN` must be the literal Safe address or the string `DEPLOYER` (sentinel
@@ -107,7 +107,7 @@ Verify the broadcast log shows the expected immutables:
 - `diem == 0xF4d97F2da56e8c3098f3a8D538DB630A2606a024`
 - `usdc == 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
 - `admin == <Safe>`
-- `operator == <RevenueSplitter v2>`
+- `operator == <RevenueSplitter v3>`
 
 Save the deployed address. We'll call it `SDIEM_V2` below.
 
@@ -169,16 +169,16 @@ makes the contract integratable.
 
 ### 5. Operator setup
 
-RevenueSplitter v2 is the live operator for sDIEM v2 rewards and is the
+RevenueSplitter v3 is the live operator for sDIEM v2 rewards and is the
 address that receives current CheapTokens USDC revenue. sDIEM v2's `operator`
 is immutable at construction, so the splitter used by the keeper must be the
-same RevenueSplitter v2 address configured as the sDIEM v2 operator.
+same RevenueSplitter v3 address configured as the sDIEM v2 operator.
 
 Current cutover state:
 
-- RevenueSplitter v2 receives new CheapTokens revenue and notifies sDIEM v2.
+- RevenueSplitter v3 receives new CheapTokens revenue and notifies sDIEM v2.
 - RevenueSplitter v1 remains historical for the v1 migration window.
-- The keeper should distribute through RevenueSplitter v2 by default.
+- The keeper should distribute through RevenueSplitter v3 by default.
 
 ## Post-deploy checklist
 
@@ -253,8 +253,8 @@ The keeper currently calls `csDIEM.harvest(deadline)` and
   both v1 and v2 until v1 is deprecated. Both calls have independent
   try/catch and skip-conditions — a failure on v2 shouldn't block v1's
   distribute.
-- **Distribute through RevenueSplitter v2.** The keeper default should match
-  the live RevenueSplitter v2 address that receives CheapTokens revenue.
+- **Distribute through RevenueSplitter v3.** The keeper default should match
+  the live RevenueSplitter v3 address that receives CheapTokens revenue.
 
 Sketch of the keeper diff:
 

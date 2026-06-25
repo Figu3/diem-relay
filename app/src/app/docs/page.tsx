@@ -132,7 +132,7 @@ export default function DocsPage() {
             <li>
               RevenueSplitter — USDC reward distribution —{" "}
               <a href={BASESCAN_ADDRESSES.revenueSplitter} rel="noreferrer" target="_blank">
-                0x96DAE834f7276D50a09149D938e998b1766AFCDa
+                0x213c8d7434E2ae7AA1C392767c5120778D413215
               </a>
             </li>
             <li>
