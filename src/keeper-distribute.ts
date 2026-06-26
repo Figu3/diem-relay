@@ -368,7 +368,7 @@ async function main(): Promise<void> {
   const harvestV2 = await runHarvest(CSDIEM_V2_ADDRESS, "v2");
 
   // Step 2: distribute — push the next 24h batch into sDIEM v2 (operator).
-  // RevenueSplitter v2 receives current CheapTokens revenue and notifies sDIEM v2.
+  // RevenueSplitter v3 receives current CheapTokens revenue and notifies sDIEM v2.
   const distribute = await runDistribute();
 
   const statuses = [harvestV1, harvestV2, distribute];
