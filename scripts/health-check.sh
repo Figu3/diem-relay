@@ -72,31 +72,31 @@ if (( AGE > MAX_AGE_SECONDS )); then
 fi
 
 # Check 4: most recent run surfaced an error.
-# Scan the entire latest run (from its 'keeper=' start line to EOF),
-# not just the last 10 lines — long stack traces can push the ERROR:
-# marker out of a fixed tail window and silently miss real failures.
+# Scan the entire latest run (from its 'keeper=' start line to EOF).
+# NOTE: use a here-string, never `echo "$x" | grep -q`. Under `set -o pipefail`
+# grep -q exits on first match and SIGPIPEs the upstream writer, so the pipeline
+# returns 141 and silently inverts the result. Here-strings have no pipe.
 LATEST_RUN_LINE=$(grep -nE "^\[[^]]+\] keeper=" "$LOG" | tail -1 | cut -d: -f1)
 if [[ -n "$LATEST_RUN_LINE" ]]; then
   LATEST_RUN=$(tail -n +"$LATEST_RUN_LINE" "$LOG")
-  if echo "$LATEST_RUN" | grep -qE "FATAL:|ERROR:"; then
-    LAST_ERR=$(echo "$LATEST_RUN" | grep -E "FATAL:|ERROR:" | head -1)
+  if grep -qE "FATAL:|ERROR:" <<<"$LATEST_RUN"; then
+    LAST_ERR=$(grep -E "FATAL:|ERROR:" <<<"$LATEST_RUN" | head -1)
     send_alert "last run surfaced an error:
 ${LAST_ERR}"
     exit 1
   fi
 fi
 
-
 # Check 5: most recent run reached "done:" — catches mid-run kills/hangs
-# (SIGKILL, OOM, RPC timeout) where the last log line is not an ERROR
-# and the log is fresh, but the keeper never finished its two steps.
-# Only applies to the new (csDIEM-aware) keeper format whose start line
-# includes 'csdiem='. Pre-csDIEM runs don't emit a 'done:' marker, so we
-# skip the check for them rather than false-alerting on historical logs.
-LAST_RUN_START_LINE=$(grep -nE "^\[[^]]+\] keeper=.*csdiem=" "$LOG" | tail -1 | cut -d: -f1)
+# (SIGKILL, OOM, RPC timeout). Anchor on the latest run that logs a 'csdiem'
+# field. The keeper now emits 'csdiem_v1='/'csdiem_v2=' (not the old single
+# 'csdiem='), so match the 'csdiem' substring to catch both formats. Before,
+# the literal 'csdiem=' matched no current run, locking onto a weeks-old line
+# and — via the pipefail/grep-q bug above — false-alerting every night.
+LAST_RUN_START_LINE=$(grep -nE "^\[[^]]+\] keeper=.*csdiem" "$LOG" | tail -1 | cut -d: -f1)
 if [[ -n "$LAST_RUN_START_LINE" ]]; then
   TAIL_FROM_LAST=$(tail -n +"$LAST_RUN_START_LINE" "$LOG")
-  if ! echo "$TAIL_FROM_LAST" | grep -qE "^\[[^]]+\] done:"; then
+  if ! grep -qE "^\[[^]]+\] done:" <<<"$TAIL_FROM_LAST"; then
     send_alert "latest keeper run started but never reached done: — process may have been killed or hung mid-execution"
     exit 1
   fi
