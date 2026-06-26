@@ -25,7 +25,7 @@
  * Env:
  *   RPC_URL          - Base JSON-RPC URL (required)
  *   KEEPER_KEY       - Hot-wallet private key, gas-only (required)
- *   SPLITTER_ADDRESS - RevenueSplitter v2 (default: 0x96DAE834f7276D50a09149D938e998b1766AFCDa)
+ *   SPLITTER_ADDRESS - RevenueSplitter v3, live operator (default: 0x213c8d7434E2ae7AA1C392767c5120778D413215)
  *   CSDIEM_ADDRESS    - csDIEM v1 vault. If unset, v1 harvest is skipped.
  *   CSDIEM_V2_ADDRESS - csDIEM v2 vault. If unset, v2 harvest is skipped.
  *   USDC_ADDRESS     - USDC token (default: Base USDC)
@@ -57,8 +57,11 @@ import { privateKeyToAccount } from "viem/accounts";
 
 const RPC_URL = process.env.RPC_URL ?? "";
 const KEEPER_KEY = process.env.KEEPER_KEY ?? "";
+// RevenueSplitter v3 — the live operator of sDIEM v2 since the 2026-06-26
+// cutover. The NUC keeper sets SPLITTER_ADDRESS explicitly; this default just
+// matches on-chain reality. (Old v2 splitter: 0x96DAE834f7276D50a09149D938e998b1766AFCDa.)
 const SPLITTER_ADDRESS = (process.env.SPLITTER_ADDRESS ??
-  "0x96DAE834f7276D50a09149D938e998b1766AFCDa") as Address;
+  "0x213c8d7434E2ae7AA1C392767c5120778D413215") as Address;
 const CSDIEM_ADDRESS = (process.env.CSDIEM_ADDRESS ?? "") as Address | "";
 const CSDIEM_V2_ADDRESS = (process.env.CSDIEM_V2_ADDRESS ?? "") as Address | "";
 const USDC_ADDRESS = (process.env.USDC_ADDRESS ??
@@ -136,6 +139,12 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+// Per-step outcome. Kept distinct (not a boolean) so the run summary never
+// conflates a routine "skip" (below threshold, paused) with an actual "fail"
+// (revert, RPC error). A "fail" is always accompanied by an ERROR: line via
+// logErr(), which health-check.sh greps for.
+type StepStatus = "ok" | "skip" | "fail";
+
 // ── Step 1: csDIEM.harvest() ────────────────────────────────────────────
 
 type HarvestState = {
@@ -154,16 +163,18 @@ async function readHarvestState(csdiem: Address): Promise<HarvestState> {
 }
 
 /**
- * Returns true on tx success, false on skip or non-fatal failure.
- * Pings /harvest-fail on revert. Never throws.
+ * Returns "ok" on tx success, "skip" when there's nothing to do (unset
+ * address, paused, below threshold), "fail" on a non-fatal failure (state
+ * read / revert / RPC error). Pings /harvest-<label>-fail on failure. Never
+ * throws.
  *
  * `label` distinguishes v1 vs v2 harvests in logs and healthcheck pings so a
  * v2-only outage doesn't mask a healthy v1 (or vice-versa).
  */
-async function runHarvest(csdiem: Address | "", label: string): Promise<boolean> {
+async function runHarvest(csdiem: Address | "", label: string): Promise<StepStatus> {
   if (!csdiem) {
     log(`harvest[${label}]: address unset — skipping`);
-    return false;
+    return "skip";
   }
 
   let state: HarvestState;
@@ -172,7 +183,7 @@ async function runHarvest(csdiem: Address | "", label: string): Promise<boolean>
   } catch (e) {
     logErr(`harvest[${label}]: state read failed: ${errMsg(e)}`);
     await pingHealthcheck(`/harvest-${label}-fail`);
-    return false;
+    return "fail";
   }
 
   log(
@@ -182,14 +193,14 @@ async function runHarvest(csdiem: Address | "", label: string): Promise<boolean>
 
   if (state.paused) {
     log(`harvest[${label}] skip: csDIEM paused`);
-    return false;
+    return "skip";
   }
   if (state.pending < state.minHarvest) {
     log(
       `harvest[${label}] skip: pending ${formatUnits(state.pending, 6)} ` +
         `< minHarvest ${formatUnits(state.minHarvest, 6)}`,
     );
-    return false;
+    return "skip";
   }
 
   // Compute deadline at submission time so it provides real mempool-delay
@@ -198,7 +209,7 @@ async function runHarvest(csdiem: Address | "", label: string): Promise<boolean>
 
   if (DRY_RUN) {
     log(`harvest[${label}] dry-run: would call csDIEM.harvest(deadline=${deadline})`);
-    return true;
+    return "ok";
   }
 
   try {
@@ -222,14 +233,14 @@ async function runHarvest(csdiem: Address | "", label: string): Promise<boolean>
     if (receipt.status !== "success") {
       logErr(`harvest[${label}] tx reverted: ${hash}`);
       await pingHealthcheck(`/harvest-${label}-fail`);
-      return false;
+      return "fail";
     }
     log(`harvest[${label}] confirmed block=${receipt.blockNumber} gas_used=${receipt.gasUsed}`);
-    return true;
+    return "ok";
   } catch (e) {
     logErr(`harvest[${label}] failed: ${errMsg(e)}`);
     await pingHealthcheck(`/harvest-${label}-fail`);
-    return false;
+    return "fail";
   }
 }
 
@@ -255,17 +266,18 @@ async function readDistributeState(): Promise<DistributeState> {
 }
 
 /**
- * Returns true on tx success, false on skip or non-fatal failure.
- * Pings /distribute-fail on revert. Never throws.
+ * Returns "ok" on tx success, "skip" when there's nothing to do (paused,
+ * below threshold, cooldown), "fail" on a non-fatal failure (state read /
+ * revert / RPC error). Pings /distribute-fail on failure. Never throws.
  */
-async function runDistribute(): Promise<boolean> {
+async function runDistribute(): Promise<StepStatus> {
   let state: DistributeState;
   try {
     state = await readDistributeState();
   } catch (e) {
     logErr(`distribute: state read failed: ${errMsg(e)}`);
     await pingHealthcheck("/distribute-fail");
-    return false;
+    return "fail";
   }
 
   const now = BigInt(Math.floor(Date.now() / 1000));
@@ -280,23 +292,23 @@ async function runDistribute(): Promise<boolean> {
 
   if (state.paused) {
     log("distribute skip: splitter paused");
-    return false;
+    return "skip";
   }
   if (state.balUsdc < state.minAmount) {
     log(
       `distribute skip: balance ${formatUnits(state.balUsdc, 6)} ` +
         `< minAmount ${formatUnits(state.minAmount, 6)}`,
     );
-    return false;
+    return "skip";
   }
   if (now < cooldownEnd) {
     log(`distribute skip: cooldown not elapsed (${secsUntilReady}s remaining)`);
-    return false;
+    return "skip";
   }
 
   if (DRY_RUN) {
     log("distribute dry-run: would call distribute()");
-    return true;
+    return "ok";
   }
 
   try {
@@ -318,14 +330,14 @@ async function runDistribute(): Promise<boolean> {
     if (receipt.status !== "success") {
       logErr(`distribute tx reverted: ${hash}`);
       await pingHealthcheck("/distribute-fail");
-      return false;
+      return "fail";
     }
     log(`distribute confirmed block=${receipt.blockNumber} gas_used=${receipt.gasUsed}`);
-    return true;
+    return "ok";
   } catch (e) {
     logErr(`distribute failed: ${errMsg(e)}`);
     await pingHealthcheck("/distribute-fail");
-    return false;
+    return "fail";
   }
 }
 
@@ -352,24 +364,28 @@ async function main(): Promise<void> {
   // Step 1: harvest v1 and v2 — claim previous 24h's accrued USDC, swap, restake.
   // Each call is self-isolated (try/catch + skip-conditions inside runHarvest),
   // so a v2 hiccup never blocks v1 and vice-versa during the migration window.
-  const harvestV1Ok = await runHarvest(CSDIEM_ADDRESS, "v1");
-  const harvestV2Ok = await runHarvest(CSDIEM_V2_ADDRESS, "v2");
+  const harvestV1 = await runHarvest(CSDIEM_ADDRESS, "v1");
+  const harvestV2 = await runHarvest(CSDIEM_V2_ADDRESS, "v2");
 
   // Step 2: distribute — push the next 24h batch into sDIEM v2 (operator).
   // RevenueSplitter v2 receives current CheapTokens revenue and notifies sDIEM v2.
-  const distributeOk = await runDistribute();
+  const distribute = await runDistribute();
 
-  const anyOk = harvestV1Ok || harvestV2Ok || distributeOk;
-  if (!anyOk) {
+  const statuses = [harvestV1, harvestV2, distribute];
+  const anyOk = statuses.includes("ok");
+  const anyFail = statuses.includes("fail");
+
+  // Only "all skipped, nothing failed" is a clean no-op. If anything failed,
+  // emit the per-step summary (each fail already logged an ERROR: line) and
+  // ping /fail so it's never mislabeled as a quiet no-op day.
+  if (!anyOk && !anyFail) {
     log("done: all steps no-op or skipped");
     await pingHealthcheck("/0");
   } else {
     log(
-      `done: harvest_v1=${harvestV1Ok ? "ok" : "skip/fail"} ` +
-        `harvest_v2=${harvestV2Ok ? "ok" : "skip/fail"} ` +
-        `distribute=${distributeOk ? "ok" : "skip/fail"}`,
+      `done: harvest_v1=${harvestV1} harvest_v2=${harvestV2} distribute=${distribute}`,
     );
-    await pingHealthcheck();
+    await pingHealthcheck(anyFail ? "/fail" : "");
   }
 }
 
