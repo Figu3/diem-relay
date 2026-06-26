@@ -12,6 +12,8 @@ import {
 import { base } from 'wagmi/chains';
 import { formatUnits, parseUnits, type Address } from 'viem';
 import { Header } from '@/components/Header';
+import { calcSDiemApr } from '@/lib/apr';
+import { useDiemPrice } from '@/hooks/useDiemPrice';
 import { csDiemV2Abi, erc20Abi, revenueSplitterAbi, sDiemV2Abi } from '@/config/abis';
 import { CSDIEM_V2_ADDRESS, DIEM_TOKEN, REVENUE_SPLITTER_ADDRESS, SDIEM_V2_ADDRESS, USDC_BASE } from '@/config/contracts';
 import {
@@ -50,9 +52,8 @@ function formatUsd(value: bigint, maxFraction = 2) {
   });
 }
 
-function formatApy(usdcPerDiemDay: bigint) {
-  const annualPercent = Number(formatUnits(usdcPerDiemDay, 6)) * 365 * 100;
-  if (!Number.isFinite(annualPercent) || annualPercent <= 0) return '0%';
+function formatApyPct(annualPercent: number | null) {
+  if (annualPercent === null || !Number.isFinite(annualPercent) || annualPercent <= 0) return '0%';
   return `${annualPercent.toLocaleString(undefined, {
     maximumFractionDigits: annualPercent >= 100 ? 0 : 2,
   })}%`;
@@ -99,6 +100,7 @@ export default function PoolPage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { switchChain, isPending: isSwitching } = useSwitchChain();
+  const { priceUsd: diemPriceUsd } = useDiemPrice();
   const [actionMode, setActionMode] = useState<ActionMode>('supply');
   const [mode, setMode] = useState<SupplyMode>('liquid');
   const [convertMode, setConvertMode] = useState<ConvertMode>('wrap');
@@ -209,10 +211,20 @@ export default function PoolPage() {
   const needsApproval = parsedDeposit > 0n && parsedDeposit > activeAllowance;
   const convertNeedsApproval = convertMode === 'wrap' && parsedDeposit > 0n && parsedDeposit > sdiemToCsAllowance;
 
-  const dailyReward = rewardRate * DAY_SECONDS;
-  const usdcPerDiemDay = totalStaked > 0n ? (dailyReward * parseUnits('1', 18)) / totalStaked : 0n;
-  const rewardStreamActive = dailyReward > 0n && totalStaked > 0n && secondsUntil(periodFinish) > 0n;
-  const currentApyLabel = rewardStreamActive ? formatApy(usdcPerDiemDay) : '0%';
+  // Net APY = (USDC streamed per year) / (USD value of staked DIEM). Reuses the
+  // single, tested calc in lib/apr.ts — which divides by the DIEM price (the
+  // step this card used to omit, inflating APY ~1,331× → the "32,704%" bug) and
+  // gates on an active reward period. null = period ended, no stake, or price
+  // not yet loaded.
+  const rewardStreamActive = rewardRate > 0n && totalStaked > 0n && secondsUntil(periodFinish) > 0n;
+  const aprPct = calcSDiemApr(
+    rewardRate,
+    totalStaked,
+    diemPriceUsd,
+    periodFinish,
+    BigInt(Math.floor(Date.now() / 1000)),
+  );
+  const currentApyLabel = !rewardStreamActive ? '0%' : aprPct === null ? '…' : formatApyPct(aprPct);
   const splitterWaitingForFloor = splitterUsdcBalance > 0n && splitterMinAmount > 0n && splitterUsdcBalance < splitterMinAmount;
   const apyStatusLabel = sdiemPaused || csdiemPaused
     ? 'Vault paused'

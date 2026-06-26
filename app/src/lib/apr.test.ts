@@ -38,6 +38,19 @@ const PRICE = 1318.18;
   check("active APR in sane range", apr !== null && apr > 3 && apr < 6);
 }
 
+// --- The "32,704%" hero-card bug: page.tsx annualized USDC-per-DIEM-per-day
+// without dividing by the DIEM price (implicitly 1 DIEM = $1). With the price
+// divisor the same live values must yield ~24.6%, not tens of thousands of %.
+{
+  const now = 1782454760n;
+  const periodFinish = 1782518703n; // active
+  const apr = calcSDiemApr(178n, 17164418267624488343n, 1331.37, periodFinish, now);
+  check("rewardRate 178 → ~24.6%, not 32,704%", apr !== null && apr > 20 && apr < 30);
+  // Sanity: the old price-less formula (usdcPerDiemDay * 365 * 100) blows up.
+  const usdcPerDiemDay = Number((178n * 86400n * 10n ** 18n) / 17164418267624488343n) / 1e6;
+  check("old price-less formula really did explode", usdcPerDiemDay * 365 * 100 > 30000);
+}
+
 // --- Boundary: now === periodFinish counts as ended (rewardRate already stale).
 {
   const t = 1782466771n;
