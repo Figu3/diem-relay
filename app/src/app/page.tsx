@@ -21,6 +21,7 @@ import {
   GITHUB_URL,
   VENICE_URL,
 } from '@/config/protocol-links';
+import { useDiemPrice } from '@/hooks/useDiemPrice';
 
 
 type SupplyMode = 'liquid' | 'direct';
@@ -50,11 +51,16 @@ function formatUsd(value: bigint, maxFraction = 2) {
   });
 }
 
-function formatApy(usdcPerDiemDay: bigint) {
-  const annualPercent = Number(formatUnits(usdcPerDiemDay, 6)) * 365 * 100;
+function formatApy(usdcPerDiemDay: bigint, diemPriceUsd: number | null) {
+  // usdcPerDiemDay is USDC earned per 1 DIEM staked per day; the yield is a
+  // fraction of the DIEM's USD value, not of $1.
+  if (!diemPriceUsd || diemPriceUsd <= 0) return '—';
+  const annualPercent =
+    (Number(formatUnits(usdcPerDiemDay, 6)) * 365 * 100) / diemPriceUsd;
   if (!Number.isFinite(annualPercent) || annualPercent <= 0) return '0%';
   return `${annualPercent.toLocaleString(undefined, {
-    maximumFractionDigits: annualPercent >= 100 ? 0 : 2,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   })}%`;
 }
 
@@ -99,6 +105,7 @@ export default function PoolPage() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
   const { switchChain, isPending: isSwitching } = useSwitchChain();
+  const { priceUsd: diemPriceUsd } = useDiemPrice();
   const [actionMode, setActionMode] = useState<ActionMode>('supply');
   const [mode, setMode] = useState<SupplyMode>('liquid');
   const [convertMode, setConvertMode] = useState<ConvertMode>('wrap');
@@ -212,7 +219,9 @@ export default function PoolPage() {
   const dailyReward = rewardRate * DAY_SECONDS;
   const usdcPerDiemDay = totalStaked > 0n ? (dailyReward * parseUnits('1', 18)) / totalStaked : 0n;
   const rewardStreamActive = dailyReward > 0n && totalStaked > 0n && secondsUntil(periodFinish) > 0n;
-  const currentApyLabel = rewardStreamActive ? formatApy(usdcPerDiemDay) : '0%';
+  const currentApyLabel = rewardStreamActive
+    ? formatApy(usdcPerDiemDay, diemPriceUsd)
+    : '0%';
   const splitterWaitingForFloor = splitterUsdcBalance > 0n && splitterMinAmount > 0n && splitterUsdcBalance < splitterMinAmount;
   const apyStatusLabel = sdiemPaused || csdiemPaused
     ? 'Vault paused'
