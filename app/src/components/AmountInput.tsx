@@ -20,7 +20,7 @@ export function AmountInput({
   disabled,
 }: AmountInputProps) {
   const formatted = Number(formatUnits(max, decimals)).toLocaleString(
-    undefined,
+    "en-US",
     { maximumFractionDigits: 4 },
   );
 

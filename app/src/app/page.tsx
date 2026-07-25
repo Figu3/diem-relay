@@ -38,7 +38,7 @@ const CSDIEM_DECIMALS = 24;
 function formatToken(value: bigint, decimals = 18, maxFraction = 4) {
   const numeric = Number(formatUnits(value, decimals));
   if (!Number.isFinite(numeric)) return '0';
-  return numeric.toLocaleString(undefined, {
+  return numeric.toLocaleString('en-US', {
     maximumFractionDigits: numeric >= 100 ? 2 : maxFraction,
   });
 }
@@ -46,7 +46,7 @@ function formatToken(value: bigint, decimals = 18, maxFraction = 4) {
 function formatUsd(value: bigint, maxFraction = 2) {
   const numeric = Number(formatUnits(value, 6));
   if (!Number.isFinite(numeric)) return '$0.00';
-  return numeric.toLocaleString(undefined, {
+  return numeric.toLocaleString('en-US', {
     style: 'currency',
     currency: 'USD',
     maximumFractionDigits: maxFraction,
@@ -60,7 +60,7 @@ function formatApy(usdcPerDiemDay: bigint, diemPriceUsd: number | null) {
   const annualPercent =
     (Number(formatUnits(usdcPerDiemDay, 6)) * 365 * 100) / diemPriceUsd;
   if (!Number.isFinite(annualPercent) || annualPercent <= 0) return '0%';
-  return `${annualPercent.toLocaleString(undefined, {
+  return `${annualPercent.toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}%`;
@@ -68,7 +68,7 @@ function formatApy(usdcPerDiemDay: bigint, diemPriceUsd: number | null) {
 
 function formatTrailingApy(percent: number | null) {
   if (percent === null) return '—';
-  return `${percent.toLocaleString(undefined, {
+  return `${percent.toLocaleString('en-US', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}%`;
