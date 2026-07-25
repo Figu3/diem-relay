@@ -36,3 +36,33 @@ export function calcSDiemApr(
 
   return (rewardsPerYearUsd / totalStakedUsd) * 100;
 }
+
+/**
+ * Calculate trailing APR from the growth (delta) of Synthetix
+ * `rewardPerToken()` between two blocks.
+ *
+ * rewardPerToken accrues `reward * 1e18 / totalSupply` (reward in USDC
+ * 6 decimals, supply in DIEM 18 decimals), so a holder of exactly 1 DIEM
+ * earns `delta / 1e18 * 1e18 = delta` raw USDC units over the window —
+ * i.e. `delta / 1e6` USD per DIEM staked.
+ *
+ * Unlike the live-rate APR above, this measures rewards actually accrued
+ * over the window, so it needs no periodFinish gate: lapsed periods simply
+ * stop growing rewardPerToken.
+ */
+export function calcTrailingApr(
+  rewardPerTokenDelta: bigint,
+  windowSeconds: bigint,
+  diemPriceUsd: number | null
+): number | null {
+  if (windowSeconds <= 0n) return null;
+  if (!diemPriceUsd || diemPriceUsd <= 0) return null;
+  if (rewardPerTokenDelta < 0n) return null;
+
+  const SECONDS_PER_YEAR = 31_536_000;
+  const usdPerDiem = Number(rewardPerTokenDelta) / 1e6;
+
+  return (
+    (usdPerDiem / diemPriceUsd) * (SECONDS_PER_YEAR / Number(windowSeconds)) * 100
+  );
+}

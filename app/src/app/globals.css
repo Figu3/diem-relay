@@ -1596,6 +1596,29 @@ body {
   text-transform: uppercase;
 }
 
+.pool-status-card .pool-status-trailing {
+  border-top: 1px solid #e7e8ef;
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  padding-top: 8px;
+}
+
+.pool-status-card .pool-status-trailing span {
+  color: #5a6072;
+  display: inline;
+  font-size: 12px;
+  margin-bottom: 0;
+}
+
+.pool-status-card .pool-status-trailing strong {
+  color: #16915a;
+  display: inline;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .pool-token-primer {
   display: grid;
   gap: 14px;
@@ -2081,6 +2104,18 @@ body {
 }
 
 .theme-dark .pool-status-card strong {
+  color: #46d38a;
+}
+
+.theme-dark .pool-status-card .pool-status-trailing {
+  border-top-color: #272a38;
+}
+
+.theme-dark .pool-status-card .pool-status-trailing span {
+  color: #a9afc0;
+}
+
+.theme-dark .pool-status-card .pool-status-trailing strong {
   color: #46d38a;
 }
 

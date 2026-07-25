@@ -22,6 +22,8 @@ import {
   VENICE_URL,
 } from '@/config/protocol-links';
 import { useDiemPrice } from '@/hooks/useDiemPrice';
+import { useTrailingApr } from '@/hooks/useTrailingApr';
+import { calcTrailingApr } from '@/lib/apr';
 
 
 type SupplyMode = 'liquid' | 'direct';
@@ -59,6 +61,14 @@ function formatApy(usdcPerDiemDay: bigint, diemPriceUsd: number | null) {
     (Number(formatUnits(usdcPerDiemDay, 6)) * 365 * 100) / diemPriceUsd;
   if (!Number.isFinite(annualPercent) || annualPercent <= 0) return '0%';
   return `${annualPercent.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}%`;
+}
+
+function formatTrailingApy(percent: number | null) {
+  if (percent === null) return '—';
+  return `${percent.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}%`;
@@ -222,6 +232,17 @@ export default function PoolPage() {
   const currentApyLabel = rewardStreamActive
     ? formatApy(usdcPerDiemDay, diemPriceUsd)
     : '0%';
+  // Trailing APYs from actual rewardPerToken() growth over the past 7/30
+  // days — unlike the headline rate they need no periodFinish gate (a lapsed
+  // period just stops accruing). Null (row hidden) when the RPC can't serve
+  // archive reads.
+  const trailing = useTrailingApr();
+  const trailingApy7d = trailing.week
+    ? calcTrailingApr(trailing.week.delta, trailing.week.windowSeconds, diemPriceUsd)
+    : null;
+  const trailingApy30d = trailing.month
+    ? calcTrailingApr(trailing.month.delta, trailing.month.windowSeconds, diemPriceUsd)
+    : null;
   const splitterWaitingForFloor = splitterUsdcBalance > 0n && splitterMinAmount > 0n && splitterUsdcBalance < splitterMinAmount;
   const apyStatusLabel = sdiemPaused || csdiemPaused
     ? 'Vault paused'
@@ -431,6 +452,16 @@ export default function PoolPage() {
             <span>Net APY</span>
             <strong>{currentApyLabel}</strong>
             <small>{apyStatusLabel}</small>
+            {(trailingApy7d !== null || trailingApy30d !== null) && (
+              <div className="pool-status-trailing">
+                <span>
+                  7d avg <strong>{formatTrailingApy(trailingApy7d)}</strong>
+                </span>
+                <span>
+                  30d avg <strong>{formatTrailingApy(trailingApy30d)}</strong>
+                </span>
+              </div>
+            )}
           </div>
         </section>
 
