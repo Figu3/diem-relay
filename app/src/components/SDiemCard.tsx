@@ -32,7 +32,7 @@ import {
 } from "@/hooks/useRedeemCSDiem";
 import { useContracts } from "@/hooks/useContracts";
 import { DIEM_TOKEN, DIEM_DECIMALS } from "@/config/contracts";
-import { formatDiem, formatUsdc } from "@/lib/format";
+import { formatDiem, formatUsdc, formatSharePrice } from "@/lib/format";
 import { calcSDiemApr } from "@/lib/apr";
 
 const CSDIEM_TOOLTIP_V1 = (
@@ -421,6 +421,10 @@ export function SDiemCard() {
         <StatRow
           label="DIEM value"
           value={`${formatDiem(csdiem.userAssetsValue)} DIEM`}
+        />
+        <StatRow
+          label="Exchange Rate"
+          value={`1 csDIEM = ${formatSharePrice(csdiem.sharePrice)} ${isV2 ? "sDIEM" : "DIEM"}`}
         />
 
         {hasCsPending && (
