@@ -221,13 +221,32 @@ async function runHarvest(csdiem: Address | "", label: string): Promise<StepStat
       args: [deadline],
     });
 
-    const hash = await wallet.writeContract({
+    // Explicit gas with headroom. A bare writeContract falls back to
+    // eth_estimateGas, which binary-searches the OUTER call and can settle on
+    // a limit with no slack for nested frames: EIP-150's 63/64 rule means each
+    // frame forwards at most 63/64 of what's left, so a deep path starves at
+    // the bottom even though the top-level estimate "passed". The 2026-07-30
+    // v2 harvest died exactly this way — ReentrancySentryOOG inside
+    // DIEM.stake(), three frames down (harvest → sdiem.stake → diem.stake),
+    // with all 549,602 gas consumed. Unused gas is refunded, so the headroom
+    // costs nothing but a slightly higher balance requirement.
+    const gasEstimate = await pub.estimateContractGas({
+      account,
       address: csdiem,
       abi: CSDIEM_ABI,
       functionName: "harvest",
       args: [deadline],
     });
-    log(`harvest[${label}] tx sent: ${hash} deadline=${deadline}`);
+    const gas = (gasEstimate * 3n) / 2n;
+
+    const hash = await wallet.writeContract({
+      address: csdiem,
+      abi: CSDIEM_ABI,
+      functionName: "harvest",
+      args: [deadline],
+      gas,
+    });
+    log(`harvest[${label}] tx sent: ${hash} deadline=${deadline} gas=${gas} (est ${gasEstimate})`);
 
     const receipt = await pub.waitForTransactionReceipt({ hash, timeout: 90_000 });
     if (receipt.status !== "success") {
