@@ -139,6 +139,48 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+// ── Nonce allocation ────────────────────────────────────────────────────
+//
+// Every writeContract below passes an EXPLICIT nonce from this allocator
+// instead of letting viem resolve one per transaction.
+//
+// Why: viem's default is a separate eth_getTransactionCount(address, "pending")
+// for each tx. RPC_URL is a load balancer (lb.routeme.sh) that round-robins
+// across backend nodes, so the second lookup can land on a node that has not
+// yet seen the first transaction and hand back the SAME nonce. Base
+// flashblocks make this trivially reachable: on 2026-08-31 the harvest[v2]
+// receipt came back 102ms after submission — far faster than pending state
+// propagates between backends — so distribute() was built with the harvest's
+// nonce (89) and identical gas price, and the node rejected it as
+// "replacement transaction underpriced". That day's rewards never went out
+// and the sDIEM v2 reward stream ran dry for ~7h.
+//
+// Reading once and handing out sequential values locally is correct here
+// because this process is the sole writer for the keeper key: one cron run,
+// strictly serial awaits, so we always know how many we have consumed.
+
+let nextNonce: number | null = null;
+
+async function allocateNonce(): Promise<number> {
+  if (nextNonce === null) {
+    nextNonce = await pub.getTransactionCount({
+      address: account.address,
+      blockTag: "pending",
+    });
+    log(`nonce: base=${nextNonce} (read from chain)`);
+  }
+  return nextNonce++;
+}
+
+// Drop the cached counter after a failed send. We cannot tell from the error
+// whether the tx was broadcast, so guessing (decrement vs. keep) risks either
+// a permanent gap that stalls every later tx or a duplicate nonce. Re-reading
+// from chain resolves it either way; it costs one RPC call on the rare error
+// path, and never runs in the happy path that caused this bug.
+function invalidateNonce(): void {
+  nextNonce = null;
+}
+
 // Per-step outcome. Kept distinct (not a boolean) so the run summary never
 // conflates a routine "skip" (below threshold, paused) with an actual "fail"
 // (revert, RPC error). A "fail" is always accompanied by an ERROR: line via
@@ -221,13 +263,37 @@ async function runHarvest(csdiem: Address | "", label: string): Promise<StepStat
       args: [deadline],
     });
 
-    const hash = await wallet.writeContract({
+    // Explicit gas with headroom. A bare writeContract falls back to
+    // eth_estimateGas, which binary-searches the OUTER call and can settle on
+    // a limit with no slack for nested frames: EIP-150's 63/64 rule means each
+    // frame forwards at most 63/64 of what's left, so a deep path starves at
+    // the bottom even though the top-level estimate "passed". The 2026-07-30
+    // v2 harvest died exactly this way — ReentrancySentryOOG inside
+    // DIEM.stake(), three frames down (harvest → sdiem.stake → diem.stake),
+    // with all 549,602 gas consumed. Unused gas is refunded, so the headroom
+    // costs nothing but a slightly higher balance requirement.
+    const gasEstimate = await pub.estimateContractGas({
+      account,
       address: csdiem,
       abi: CSDIEM_ABI,
       functionName: "harvest",
       args: [deadline],
     });
-    log(`harvest[${label}] tx sent: ${hash} deadline=${deadline}`);
+    const gas = (gasEstimate * 3n) / 2n;
+    const nonce = await allocateNonce();
+
+    const hash = await wallet.writeContract({
+      address: csdiem,
+      abi: CSDIEM_ABI,
+      functionName: "harvest",
+      args: [deadline],
+      gas,
+      nonce,
+    });
+    log(
+      `harvest[${label}] tx sent: ${hash} nonce=${nonce} deadline=${deadline} ` +
+        `gas=${gas} (est ${gasEstimate})`,
+    );
 
     const receipt = await pub.waitForTransactionReceipt({ hash, timeout: 90_000 });
     if (receipt.status !== "success") {
@@ -238,6 +304,7 @@ async function runHarvest(csdiem: Address | "", label: string): Promise<StepStat
     log(`harvest[${label}] confirmed block=${receipt.blockNumber} gas_used=${receipt.gasUsed}`);
     return "ok";
   } catch (e) {
+    invalidateNonce();
     logErr(`harvest[${label}] failed: ${errMsg(e)}`);
     await pingHealthcheck(`/harvest-${label}-fail`);
     return "fail";
@@ -319,12 +386,15 @@ async function runDistribute(): Promise<StepStatus> {
       functionName: "distribute",
     });
 
+    const nonce = await allocateNonce();
+
     const hash = await wallet.writeContract({
       address: SPLITTER_ADDRESS,
       abi: SPLITTER_ABI,
       functionName: "distribute",
+      nonce,
     });
-    log(`distribute tx sent: ${hash}`);
+    log(`distribute tx sent: ${hash} nonce=${nonce}`);
 
     const receipt = await pub.waitForTransactionReceipt({ hash, timeout: 90_000 });
     if (receipt.status !== "success") {
@@ -335,6 +405,7 @@ async function runDistribute(): Promise<StepStatus> {
     log(`distribute confirmed block=${receipt.blockNumber} gas_used=${receipt.gasUsed}`);
     return "ok";
   } catch (e) {
+    invalidateNonce();
     logErr(`distribute failed: ${errMsg(e)}`);
     await pingHealthcheck("/distribute-fail");
     return "fail";
