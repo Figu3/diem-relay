@@ -13,6 +13,15 @@ export const CSDIEM_V2_ADDRESS = (process.env.NEXT_PUBLIC_CSDIEM_V2_ADDRESS ??
   "0x78B8726929911044748374178CB2D417A54319e5") as Address;
 export const REVENUE_SPLITTER_ADDRESS = "0x213c8d7434E2ae7AA1C392767c5120778D413215" as Address;
 
+// Every splitter that has ever distributed revenue, oldest first, with its
+// deploy block so fee history log scans start where each contract was born.
+// v1 fed sDIEM v1, v2 (100 USDC floor) and v3 feed sDIEM v2.
+export const REVENUE_SPLITTER_HISTORY: ReadonlyArray<{ address: Address; fromBlock: bigint }> = [
+  { address: "0xd185138CEA135E60CA6E567BE53DEC81D89Ce7D6", fromBlock: 44_691_017n },
+  { address: "0x96DAE834f7276D50a09149D938e998b1766AFCDa", fromBlock: 46_309_601n },
+  { address: REVENUE_SPLITTER_ADDRESS, fromBlock: 47_276_576n },
+];
+
 export const SDIEM_ADDRESS = SDIEM_V2_ADDRESS;
 export const CSDIEM_ADDRESS = CSDIEM_V2_ADDRESS;
 

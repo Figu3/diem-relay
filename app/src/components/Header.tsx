@@ -19,6 +19,9 @@ export function Header() {
           <a className={`site-nav-link${pathname === "/" ? " site-nav-link-active" : ""}`} href="/">
             Stake
           </a>
+          <a className={`site-nav-link${pathname === "/fees" ? " site-nav-link-active" : ""}`} href="/fees">
+            Fees
+          </a>
           <a
             className="site-nav-link"
             href={CHEAPTOKENS_BUY_URL}

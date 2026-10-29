@@ -2568,3 +2568,143 @@ body {
     width: min(260px, calc(100vw - 96px)) !important;
   }
 }
+
+/* Fees page: trailing 7d fees chart. */
+.fees-chart {
+  --fees-accent: #4a52e0;
+  --fees-grid: #eef0f5;
+  --fees-ink: #5a6072;
+  --fees-surface: #ffffff;
+  margin: 4px 0 16px;
+  position: relative;
+  width: 100%;
+}
+
+.theme-dark .fees-chart {
+  --fees-accent: #7a82f7;
+  --fees-grid: #272a38;
+  --fees-ink: #a9afc0;
+  --fees-surface: #11131d;
+}
+
+.fees-chart svg {
+  display: block;
+  touch-action: pan-y;
+}
+
+.fees-chart-grid {
+  stroke: var(--fees-grid);
+  stroke-width: 1;
+}
+
+.fees-chart-axis {
+  fill: var(--fees-ink);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+
+.fees-chart-area {
+  fill: var(--fees-accent);
+  opacity: 0.12;
+}
+
+.fees-chart-line {
+  fill: none;
+  stroke: var(--fees-accent);
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.fees-chart-crosshair {
+  stroke: var(--fees-ink);
+  stroke-dasharray: 3 3;
+  stroke-width: 1;
+}
+
+.fees-chart-dot {
+  fill: var(--fees-accent);
+  stroke: var(--fees-surface);
+  stroke-width: 2;
+}
+
+.fees-chart-tooltip {
+  background: var(--fees-surface);
+  border: 1px solid var(--fees-grid);
+  border-radius: 10px;
+  box-shadow: 0 12px 30px -18px rgba(40, 44, 90, 0.45);
+  color: var(--fees-ink);
+  display: grid;
+  font-size: 12px;
+  gap: 2px;
+  min-width: 150px;
+  padding: 10px 12px;
+  pointer-events: none;
+  position: absolute;
+  top: 12px;
+}
+
+.fees-chart-tooltip strong {
+  color: #191c28;
+  font-size: 18px;
+}
+
+.theme-dark .fees-chart-tooltip strong {
+  color: #f6f7fb;
+}
+
+.fees-chart-tooltip-split {
+  border-top: 1px solid var(--fees-grid);
+  display: grid;
+  gap: 2px;
+  margin-top: 6px;
+  padding-top: 6px;
+}
+
+.fees-note {
+  color: #5a6072;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 14px 0 0;
+}
+
+.theme-dark .fees-note {
+  color: #a9afc0;
+}
+
+.fees-table {
+  color: #5a6072;
+  font-size: 13px;
+  margin-top: 12px;
+}
+
+.fees-table summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.fees-table table {
+  border-collapse: collapse;
+  margin-top: 10px;
+  width: 100%;
+}
+
+.fees-table th,
+.fees-table td {
+  border-bottom: 1px solid #eef0f5;
+  padding: 6px 8px;
+  text-align: right;
+}
+
+.fees-table th:first-child,
+.fees-table td:first-child {
+  text-align: left;
+}
+
+.theme-dark .fees-table {
+  color: #a9afc0;
+}
+
+.theme-dark .fees-table th,
+.theme-dark .fees-table td {
+  border-color: #272a38;
+}
