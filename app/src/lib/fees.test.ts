@@ -2,7 +2,7 @@
  * One-off test for rollingFees (no JS test runner in this app — run with `bun`).
  *   bun run src/lib/fees.test.ts
  */
-import { rollingFees, type Distribution } from "./fees";
+import { rollingApr, rollingFees, stakedAtClose, type Distribution } from "./fees";
 
 let failures = 0;
 function check(name: string, cond: boolean) {
@@ -46,6 +46,40 @@ check("empty input -> no points", rollingFees([], T0).length === 0);
   check("sorts its input and sums same-day distributions", pts[0].total === 3);
   check("accumulates across the window", pts[3].total === 7);
   check("day 7 drops day 0 and adds day 7", pts[7].total === 9);
+}
+
+console.log("stakedAtClose");
+
+{
+  const diem = (n: number) => BigInt(n) * 10n ** 18n;
+  const days = [T0, T0 + DAY, T0 + 2 * DAY];
+  const staked = stakedAtClose(
+    [
+      { timestamp: T0 + DAY + 10, delta: -diem(4) },
+      { timestamp: T0 + 5, delta: diem(10) },
+      { timestamp: T0 + 2 * DAY + DAY, delta: diem(99) }, // next day's 00:00: excluded
+    ],
+    days
+  );
+  check("applies changes up to each day's close, unsorted input", staked.join() === "10,6,6");
+}
+
+console.log("rollingApr");
+
+{
+  // 7 days of $7/day to stakers -> $49 per 7d; 100 DIEM at $1 -> $100 staked.
+  const pts = rollingFees(
+    Array.from({ length: 7 }, (_, d) => ({
+      timestamp: T0 + d * DAY + 3600,
+      platform: 0n,
+      staker: usdc(7),
+    })),
+    T0 + 6 * DAY
+  );
+  const apr = rollingApr(pts, Array(7).fill(100), Array(7).fill(1));
+  check("annualizes the window's staker fees over staked value", Math.abs((apr[6] ?? 0) - 49 * (365 / 7)) < 1e-9);
+  check("missing price -> null", rollingApr(pts, Array(7).fill(100), [1, 1, 1, 1, 1, 1, null])[6] === null);
+  check("nothing staked -> null", rollingApr(pts, Array(7).fill(0), Array(7).fill(1))[6] === null);
 }
 
 if (failures > 0) {

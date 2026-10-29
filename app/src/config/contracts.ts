@@ -22,6 +22,13 @@ export const REVENUE_SPLITTER_HISTORY: ReadonlyArray<{ address: Address; fromBlo
   { address: REVENUE_SPLITTER_ADDRESS, fromBlock: 47_276_576n },
 ];
 
+// sDIEM deployments with their deploy blocks, for staked-DIEM history scans.
+export const SDIEM_V1_DEPLOYMENT = {
+  address: "0xdbF05AF4fdAA518AC9c4dc5aA49399b8dd0B4be2" as Address,
+  fromBlock: 43_534_355n,
+};
+export const SDIEM_V2_DEPLOYMENT = { address: SDIEM_V2_ADDRESS, fromBlock: 46_251_126n };
+
 export const SDIEM_ADDRESS = SDIEM_V2_ADDRESS;
 export const CSDIEM_ADDRESS = CSDIEM_V2_ADDRESS;
 

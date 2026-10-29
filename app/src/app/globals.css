@@ -2708,3 +2708,50 @@ body {
 .theme-dark .fees-table td {
   border-color: #272a38;
 }
+
+.fees-header-left {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.fees-mode-tabs {
+  background: #f6f7fb;
+  border: 1px solid #eef0f5;
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+}
+
+.fees-mode-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  color: #5a6072;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+}
+
+.fees-mode-tabs button.fees-mode-tab-active {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(40, 44, 90, 0.12);
+  color: #191c28;
+}
+
+.theme-dark .fees-mode-tabs {
+  background: #0c0d13;
+  border-color: #272a38;
+}
+
+.theme-dark .fees-mode-tabs button {
+  color: #a9afc0;
+}
+
+.theme-dark .fees-mode-tabs button.fees-mode-tab-active {
+  background: #272a38;
+  color: #f6f7fb;
+}

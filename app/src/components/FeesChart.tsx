@@ -1,17 +1,28 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { type FeePoint } from "@/lib/fees";
 
 const HEIGHT = 300;
 const PAD = { top: 16, right: 16, bottom: 30, left: 56 };
 
-function formatUsd(value: number, compact = false) {
-  return value.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: compact ? 0 : 2,
-  });
+export interface ChartPoint {
+  /** Unix seconds at 00:00 UTC. */
+  day: number;
+  /** Null leaves a gap in the line (e.g. no price or nothing staked). */
+  value: number | null;
+  /** Extra tooltip lines below the headline value. */
+  details: string[];
+}
+
+interface FeesChartProps {
+  points: ChartPoint[];
+  /** Tooltip headline value. */
+  formatValue: (value: number) => string;
+  /** Y-axis tick label. */
+  formatTick: (value: number) => string;
+  /** Caption under the tooltip value, e.g. "7d fees". */
+  valueLabel: string;
+  ariaLabel: string;
 }
 
 function formatDay(day: number, opts: Intl.DateTimeFormatOptions) {
@@ -30,7 +41,7 @@ function niceTicks(max: number, count = 4) {
   return ticks;
 }
 
-export function FeesChart({ points }: { points: FeePoint[] }) {
+export function FeesChart({ points, formatValue, formatTick, valueLabel, ariaLabel }: FeesChartProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(720);
   const [hover, setHover] = useState<number | null>(null);
@@ -46,16 +57,26 @@ export function FeesChart({ points }: { points: FeePoint[] }) {
   const geometry = useMemo(() => {
     const innerW = Math.max(width - PAD.left - PAD.right, 1);
     const innerH = HEIGHT - PAD.top - PAD.bottom;
-    const ticks = niceTicks(Math.max(...points.map((p) => p.total), 0));
+    const ticks = niceTicks(Math.max(...points.map((p) => p.value ?? 0), 0));
     const yMax = ticks[ticks.length - 1];
     const span = Math.max(points.length - 1, 1);
     const x = (i: number) => PAD.left + (i / span) * innerW;
     const y = (v: number) => PAD.top + innerH - (v / yMax) * innerH;
 
-    const line = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.total).toFixed(1)}`).join("");
-    const area = points.length
-      ? `${line}L${x(points.length - 1).toFixed(1)},${y(0)}L${x(0).toFixed(1)},${y(0)}Z`
-      : "";
+    // Split into runs of known values so nulls show as gaps, not drops to 0.
+    const runs: number[][] = [];
+    points.forEach((p, i) => {
+      if (p.value === null) return;
+      const run = runs[runs.length - 1];
+      if (run && run[run.length - 1] === i - 1) run.push(i);
+      else runs.push([i]);
+    });
+    const runLine = (run: number[]) =>
+      run.map((i, k) => `${k ? "L" : "M"}${x(i).toFixed(1)},${y(points[i].value ?? 0).toFixed(1)}`).join("");
+    const line = runs.map(runLine).join("");
+    const area = runs
+      .map((run) => `${runLine(run)}L${x(run[run.length - 1]).toFixed(1)},${y(0)}L${x(run[0]).toFixed(1)},${y(0)}Z`)
+      .join("");
 
     // One label per month, at the 1st (or the first day shown).
     const months = points.flatMap((p, i) => {
@@ -81,7 +102,7 @@ export function FeesChart({ points }: { points: FeePoint[] }) {
   return (
     <div className="fees-chart" ref={wrapRef}>
       <svg
-        aria-label="Trailing 7-day fees in USD, daily since launch"
+        aria-label={ariaLabel}
         height={HEIGHT}
         onPointerLeave={() => setHover(null)}
         onPointerMove={handleMove}
@@ -92,7 +113,7 @@ export function FeesChart({ points }: { points: FeePoint[] }) {
           <g key={t}>
             <line className="fees-chart-grid" x1={PAD.left} x2={width - PAD.right} y1={geometry.y(t)} y2={geometry.y(t)} />
             <text className="fees-chart-axis" textAnchor="end" x={PAD.left - 8} y={geometry.y(t) + 4}>
-              {formatUsd(t, true)}
+              {formatTick(t)}
             </text>
           </g>
         ))}
@@ -106,7 +127,9 @@ export function FeesChart({ points }: { points: FeePoint[] }) {
         {active && (
           <>
             <line className="fees-chart-crosshair" x1={activeX} x2={activeX} y1={PAD.top} y2={HEIGHT - PAD.bottom} />
-            <circle className="fees-chart-dot" cx={activeX} cy={geometry.y(active.total)} r={5} />
+            {active.value !== null && (
+              <circle className="fees-chart-dot" cx={activeX} cy={geometry.y(active.value)} r={5} />
+            )}
           </>
         )}
       </svg>
@@ -119,12 +142,15 @@ export function FeesChart({ points }: { points: FeePoint[] }) {
           }}
         >
           <span>{formatDay(active.day, { month: "short", day: "numeric", year: "numeric" })}</span>
-          <strong>{formatUsd(active.total)}</strong>
-          <small>7d fees</small>
-          <div className="fees-chart-tooltip-split">
-            <span>Stakers {formatUsd(active.staker)}</span>
-            <span>Platform {formatUsd(active.platform)}</span>
-          </div>
+          <strong>{active.value === null ? "—" : formatValue(active.value)}</strong>
+          <small>{valueLabel}</small>
+          {active.details.length > 0 && (
+            <div className="fees-chart-tooltip-split">
+              {active.details.map((line) => (
+                <span key={line}>{line}</span>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
